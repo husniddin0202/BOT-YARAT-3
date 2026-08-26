@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import logging
+import uuid
 import httpx
 from datetime import datetime, timedelta
 
@@ -27,7 +28,7 @@ def admin_contact_url() -> str:
     return f"tg://user?id={ADMIN_ID}"
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-DATA_FILE = "bots_data.json"
+DATA_FILE = os.getenv("DATA_FILE_PATH", "bots_data.json")  # Railway Volume ulasangiz, masalan: /data/bots_data.json
 TRIAL_DAYS = 7
 
 logging.basicConfig(level=logging.INFO)
@@ -109,6 +110,9 @@ def save_data():
         except Exception as e:
             logging.error(f"MongoDB'ga yozishda xato: {e}")
     # Zaxira variant
+    data_dir = os.path.dirname(DATA_FILE)
+    if data_dir:
+        os.makedirs(data_dir, exist_ok=True)
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -222,7 +226,10 @@ class PostFlow(StatesGroup):
 
 
 class AddChannel(StatesGroup):
+    choosing_type = State()
     waiting_username = State()
+    waiting_title = State()
+    waiting_link = State()
 
 
 class CurrencyAdd(StatesGroup):
@@ -353,9 +360,22 @@ def channels_admin_kb():
     ])
 
 
+SOCIAL_EMOJI = {
+    "instagram": "📸",
+    "tiktok": "🎵",
+    "youtube": "▶️",
+    "other": "🌐",
+}
+
+
 async def get_missing_channels(bot: Bot, channels: dict, user_id: int):
+    """Faqat Telegram kanallar uchun haqiqiy obuna tekshiruvi mumkin.
+    Instagram/TikTok/YouTube/Boshqa havola turlari Bot API orqali tekshirib bo'lmaydi,
+    shuning uchun ular bloklovchi hisoblanmaydi — faqat reklama tugmasi sifatida ko'rsatiladi."""
     missing = []
     for chat_id, info in channels.items():
+        if info.get("type", "telegram") != "telegram":
+            continue
         try:
             member = await bot.get_chat_member(chat_id=int(chat_id), user_id=user_id)
             if member.status in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED):
@@ -367,8 +387,14 @@ async def get_missing_channels(bot: Bot, channels: dict, user_id: int):
     return missing
 
 
-def subscribe_kb(missing):
+def subscribe_kb(missing, channels: dict):
     buttons = [[InlineKeyboardButton(text=info["title"], url=f"https://t.me/{info['username'].lstrip('@')}")] for info in missing]
+    # Instagram/TikTok/YouTube/Boshqa havola — tekshirib bo'lmaydi, shuning uchun har doim reklama sifatida qo'shiladi
+    for info in channels.values():
+        ctype = info.get("type", "telegram")
+        if ctype != "telegram":
+            emoji = SOCIAL_EMOJI.get(ctype, "🔗")
+            buttons.append([InlineKeyboardButton(text=f"{emoji} {info['title']}", url=info["url"])])
     buttons.append([InlineKeyboardButton(text="✅ Obuna bo'ldim", callback_data="check_sub")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -382,7 +408,7 @@ async def require_subscription(event, info: dict, admin_id: int) -> bool:
         return True
     missing = await get_missing_channels(event.bot, channels, uid)
     if missing:
-        kb = subscribe_kb(missing)
+        kb = subscribe_kb(missing, channels)
         text = "Botdan foydalanish uchun quyidagi kanal(lar)ga obuna bo'ling:"
         if isinstance(event, CallbackQuery):
             await event.message.answer(text, reply_markup=kb)
@@ -430,15 +456,42 @@ def setup_subscription_handlers(dp: Dispatcher, token: str, admin_id: int):
     info = data["bots"][token]
     info.setdefault("channels", {})
 
+    def channel_type_kb():
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📢 Telegram kanal", callback_data="chtype_telegram"),
+                InlineKeyboardButton(text="📸 Instagram", callback_data="chtype_instagram"),
+            ],
+            [
+                InlineKeyboardButton(text="🎵 TikTok", callback_data="chtype_tiktok"),
+                InlineKeyboardButton(text="▶️ YouTube", callback_data="chtype_youtube"),
+            ],
+            [InlineKeyboardButton(text="🌐 Boshqa havola", callback_data="chtype_other")],
+        ])
+
     @dp.callback_query(F.data == "ch_add")
     async def ch_add_cb(callback: CallbackQuery, state: FSMContext):
         if not is_admin(info, callback.from_user.id):
             return
-        await callback.message.answer(
-            "Kanal usernameni yuboring (masalan: @mening_kanalim).\n"
-            "⚠️ Bot o'sha kanalda ADMIN bo'lishi shart!"
-        )
-        await state.set_state(AddChannel.waiting_username)
+        await callback.message.answer("Kanal turini tanlang:", reply_markup=channel_type_kb())
+        await state.set_state(AddChannel.choosing_type)
+        await callback.answer()
+
+    @dp.callback_query(AddChannel.choosing_type, F.data.startswith("chtype_"))
+    async def ch_type_chosen_cb(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            return
+        ctype = callback.data.split("_", 1)[1]
+        if ctype == "telegram":
+            await callback.message.answer(
+                "Kanal usernameni yuboring (masalan: @mening_kanalim).\n"
+                "⚠️ Bot o'sha kanalda ADMIN bo'lishi shart!"
+            )
+            await state.set_state(AddChannel.waiting_username)
+        else:
+            await state.update_data(ch_type=ctype)
+            await callback.message.answer("Kanal/sahifa nomini yuboring (masalan: Ravshan Media):")
+            await state.set_state(AddChannel.waiting_title)
         await callback.answer()
 
     @dp.message(AddChannel.waiting_username)
@@ -448,7 +501,7 @@ def setup_subscription_handlers(dp: Dispatcher, token: str, admin_id: int):
         username = message.text.strip()
         try:
             chat = await message.bot.get_chat(username)
-            info["channels"][str(chat.id)] = {"username": username, "title": chat.title}
+            info["channels"][str(chat.id)] = {"type": "telegram", "username": username, "title": chat.title}
             save_data()
             await message.answer(f"✅ Qo'shildi: {chat.title}")
 
@@ -469,6 +522,31 @@ def setup_subscription_handlers(dp: Dispatcher, token: str, admin_id: int):
             await message.answer(f"❌ Xatolik: kanal topilmadi.\n{e}")
         await state.clear()
 
+    @dp.message(AddChannel.waiting_title)
+    async def ch_add_title_process(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        title = message.text.strip()
+        await state.update_data(ch_title=title)
+        await state.set_state(AddChannel.waiting_link)
+        await message.answer("Endi havolani (linkni) yuboring (masalan: https://instagram.com/...):")
+
+    @dp.message(AddChannel.waiting_link)
+    async def ch_add_link_process(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        url = message.text.strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+        fsm_data = await state.get_data()
+        ctype = fsm_data.get("ch_type", "other")
+        title = fsm_data.get("ch_title", "Havola")
+        key = f"social_{uuid.uuid4().hex[:8]}"
+        info["channels"][key] = {"type": ctype, "title": title, "url": url}
+        save_data()
+        await message.answer(f"✅ Qo'shildi: {title}")
+        await state.clear()
+
     @dp.callback_query(F.data == "ch_list")
     async def ch_list_cb(callback: CallbackQuery):
         if not is_admin(info, callback.from_user.id):
@@ -476,10 +554,15 @@ def setup_subscription_handlers(dp: Dispatcher, token: str, admin_id: int):
         if not info["channels"]:
             await callback.message.answer("Hozircha majburiy kanallar yo'q.")
         else:
-            text = "📋 Majburiy obuna kanallari:\n\n" + "\n".join(
-                f"• {c['title']} ({c['username']})" for c in info["channels"].values()
-            )
-            await callback.message.answer(text)
+            lines = []
+            for c in info["channels"].values():
+                ctype = c.get("type", "telegram")
+                if ctype == "telegram":
+                    lines.append(f"• 📢 {c['title']} ({c['username']})")
+                else:
+                    emoji = SOCIAL_EMOJI.get(ctype, "🔗")
+                    lines.append(f"• {emoji} {c['title']} ({c['url']})")
+            await callback.message.answer("📋 Majburiy obuna kanallari:\n\n" + "\n".join(lines))
         await callback.answer()
 
     @dp.callback_query(F.data == "ch_del")
