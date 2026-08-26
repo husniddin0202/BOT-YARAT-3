@@ -44,13 +44,7 @@ BOT_TYPES = {
     "translate": "🌐 Tarjimon bot",
     "contact": "📞 Aloqa bot",
     "survey": "📝 Anketa bot",
-    "taxi": "🚕 Taxi bot",
-    "test": "🎓 Ta'lim/Test bot",
-    "fitness": "🏋️ Fitnes/Dieta bot",
-    "prayer": "🕌 Namoz vaqtlari bot",
     "weather": "🌤 Ob-havo bot",
-    "football": "⚽ Futbol natijalar bot",
-    "cars": "🚗 Avtomobil e'lonlari bot",
 }
 
 DEFAULT_PRICES = {
@@ -62,13 +56,7 @@ DEFAULT_PRICES = {
     "translate": 120_000,
     "contact": 120_000,
     "survey": 120_000,
-    "taxi": 120_000,
-    "test": 120_000,
-    "fitness": 120_000,
-    "prayer": 120_000,
     "weather": 120_000,
-    "football": 120_000,
-    "cars": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart)
 
@@ -133,6 +121,12 @@ data.setdefault("monthly_rate", DEFAULT_MONTHLY_RATE)
 for _key, _val in DEFAULT_PRICES.items():
     data["prices"].setdefault(_key, _val)
 
+# RAVSHAN BUILDER BOTning to'liq nusxalari (klonlari) shu yerda ro'yxatga olinadi.
+# Har biri: {"token": "...", "username": "...", "created_at": "..."}
+data.setdefault("platform_clones", [])
+
+running_platform_clones = {}  # token -> asyncio task
+
 
 def get_price(bot_type: str) -> int:
     return data["prices"].get(bot_type, DEFAULT_PRICES.get(bot_type, 0))
@@ -177,6 +171,11 @@ class NewBotFlow(StatesGroup):
     waiting_token = State()
 
 
+class NewPlatformFlow(StatesGroup):
+    """RAVSHAN BUILDER BOTning to'liq nusxasini (klon) yaratish uchun — faqat ADMIN_ID."""
+    waiting_token = State()
+
+
 class EditPrice(StatesGroup):
     waiting_amount = State()
 
@@ -192,15 +191,6 @@ class ActivateFlow(StatesGroup):
 class GlobalButtonAdd(StatesGroup):
     waiting_label = State()
     waiting_response = State()
-
-
-class BMIFlow(StatesGroup):
-    waiting_weight = State()
-    waiting_height = State()
-
-
-class CityFlow(StatesGroup):
-    waiting_city = State()
 
 
 class AddMovie(StatesGroup):
@@ -256,41 +246,8 @@ class SurveyAnswer(StatesGroup):
     answering = State()
 
 
-class TaxiFlow(StatesGroup):
-    waiting_from = State()
-    waiting_to = State()
-    waiting_phone = State()
-
-
-class TestAdmin(StatesGroup):
-    waiting_question = State()
-    waiting_options = State()
-    waiting_correct = State()
-
-
-class TestAnswer(StatesGroup):
-    answering = State()
-
-
-class PrayerCity(StatesGroup):
-    waiting_city = State()
-
-
 class WeatherCity(StatesGroup):
     waiting_city = State()
-
-
-class FootballAdmin(StatesGroup):
-    waiting_match = State()
-    waiting_score = State()
-    waiting_date = State()
-
-
-class CarAdFlow(StatesGroup):
-    waiting_brand = State()
-    waiting_year = State()
-    waiting_price = State()
-    waiting_phone = State()
 
 
 class AddAdmin(StatesGroup):
@@ -577,333 +534,381 @@ def contact_admin_kb():
     ])
 
 
-@main_dp.message(Command("cancel"))
-async def main_cancel(message: Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is None:
-        await message.answer("Bekor qilinadigan jarayon yo'q.")
-        return
-    await state.clear()
-    await message.answer("❌ Jarayon bekor qilindi.")
+def setup_platform_bot(dp: Dispatcher):
+    """
+    RAVSHAN BUILDER BOTning to'liq mantig'i shu yerda joylashgan: /start, /newbot,
+    /prices, /globalbuttons, /mybots, to'lov tasdiqlash va h.k.
 
+    Bu funksiya bitta Dispatcher (main_dp yoki klon bot dispatcheri)ga qo'llanadi.
+    Shu tufayli /newplatform orqali yaratilgan har qanday klon — asl RAVSHAN BUILDER
+    BOTning AYNAN o'zi kabi ishlaydi (bir xil narxlar, bir xil botlar bazasi,
+    bir xil ADMIN_ID nazorati — chunki hammasi umumiy `data` obyektidan foydalanadi).
+    """
 
-@main_dp.message(Command("myid"))
-async def myid_handler(message: Message):
-    await message.answer(f"Sizning Telegram ID'ingiz: <code>{message.from_user.id}</code>")
+    @dp.message(Command("cancel"))
+    async def main_cancel(message: Message, state: FSMContext):
+        current_state = await state.get_state()
+        if current_state is None:
+            await message.answer("Bekor qilinadigan jarayon yo'q.")
+            return
+        await state.clear()
+        await message.answer("❌ Jarayon bekor qilindi.")
 
+    @dp.message(Command("myid"))
+    async def myid_handler(message: Message):
+        await message.answer(f"Sizning Telegram ID'ingiz: <code>{message.from_user.id}</code>")
 
-@main_dp.message(Command("start"))
-async def main_start(message: Message):
-    price_lines = "\n".join(f"{BOT_TYPES[key]} — {get_price(key):,} so'm" for key in BOT_TYPES)
-    text = (
-        "🤖 <b>Bot yaratuvchi platformaga xush kelibsiz!</b>\n\n"
-        "Bu yerda bir necha daqiqada o'zingizga kerakli botni yaratishingiz mumkin.\n\n"
-        "💳 <b>Boshlang'ich narxlar:</b>\n"
-        f"{price_lines}\n\n"
-        f"📅 Keyingi oylardan boshlab — narxning atigi {int(get_monthly_rate()*100)}%.\n"
-        f"🎁 Har bir bot uchun {TRIAL_DAYS} kunlik BEPUL sinov muddati bor!\n\n"
-        "💳 To'lov usuli: administrator bilan bog'lanish\n\n"
-        "Bot yaratish: /newbot\n"
-        "Botlaringiz: /mybots"
-    )
-    await message.answer(text, reply_markup=contact_admin_kb())
+    @dp.message(Command("start"))
+    async def main_start(message: Message):
+        price_lines = "\n".join(f"{BOT_TYPES[key]} — {get_price(key):,} so'm" for key in BOT_TYPES)
+        text = (
+            "🤖 <b>Bot yaratuvchi platformaga xush kelibsiz!</b>\n\n"
+            "Bu yerda bir necha daqiqada o'zingizga kerakli botni yaratishingiz mumkin.\n\n"
+            "💳 <b>Boshlang'ich narxlar:</b>\n"
+            f"{price_lines}\n\n"
+            f"📅 Keyingi oylardan boshlab — narxning atigi {int(get_monthly_rate()*100)}%.\n"
+            f"🎁 Har bir bot uchun {TRIAL_DAYS} kunlik BEPUL sinov muddati bor!\n\n"
+            "💳 To'lov usuli: administrator bilan bog'lanish\n\n"
+            "Bot yaratish: /newbot\n"
+            "Botlaringiz: /mybots"
+        )
+        await message.answer(text, reply_markup=contact_admin_kb())
 
+    @dp.message(Command("newbot"))
+    async def newbot_start(message: Message, state: FSMContext):
+        await message.answer(
+            "Yangi bot tokenini yuboring.\n"
+            "(@BotFather orqali /newbot bilan yaratib, tokenni shu yerga joylashtiring)"
+        )
+        await state.set_state(NewBotFlow.waiting_token)
 
-@main_dp.message(Command("newbot"))
-async def newbot_start(message: Message, state: FSMContext):
-    await message.answer(
-        "Yangi bot tokenini yuboring.\n"
-        "(@BotFather orqali /newbot bilan yaratib, tokenni shu yerga joylashtiring)"
-    )
-    await state.set_state(NewBotFlow.waiting_token)
+    @dp.message(NewBotFlow.waiting_token)
+    async def newbot_token(message: Message, state: FSMContext):
+        token = message.text.strip()
+        try:
+            test_bot = Bot(token=token)
+            me = await test_bot.get_me()
+            await test_bot.session.close()
+        except Exception:
+            await message.answer("❌ Token noto'g'ri. Qaytadan yuboring.")
+            return
 
+        await state.update_data(token=token, bot_name=me.first_name)
+        await message.answer(f"✅ Bot topildi: <b>{me.first_name}</b>\n\nEndi bot turini tanlang:", reply_markup=types_kb())
 
-@main_dp.message(NewBotFlow.waiting_token)
-async def newbot_token(message: Message, state: FSMContext):
-    token = message.text.strip()
-    try:
-        test_bot = Bot(token=token)
-        me = await test_bot.get_me()
-        await test_bot.session.close()
-    except Exception:
-        await message.answer("❌ Token noto'g'ri. Qaytadan yuboring.")
-        return
+    @dp.callback_query(F.data.startswith("type_"))
+    async def newbot_type(callback: CallbackQuery, state: FSMContext):
+        bot_type = callback.data.split("_", 1)[1]
+        state_data = await state.get_data()
+        token = state_data.get("token")
+        bot_name = state_data.get("bot_name")
 
-    await state.update_data(token=token, bot_name=me.first_name)
-    await message.answer(f"✅ Bot topildi: <b>{me.first_name}</b>\n\nEndi bot turini tanlang:", reply_markup=types_kb())
+        if not token:
+            await callback.answer("Xatolik: qaytadan /newbot bosing.", show_alert=True)
+            return
 
+        bot_id = data["next_bot_id"]
+        data["next_bot_id"] += 1
 
-@main_dp.callback_query(F.data.startswith("type_"))
-async def newbot_type(callback: CallbackQuery, state: FSMContext):
-    bot_type = callback.data.split("_", 1)[1]
-    state_data = await state.get_data()
-    token = state_data.get("token")
-    bot_name = state_data.get("bot_name")
-
-    if not token:
-        await callback.answer("Xatolik: qaytadan /newbot bosing.", show_alert=True)
-        return
-
-    bot_id = data["next_bot_id"]
-    data["next_bot_id"] += 1
-
-    data["bots"][token] = {
-        "id": bot_id,
-        "type": bot_type,
-        "name": bot_name,
-        "admin_id": callback.from_user.id,
-        "admin_ids": [callback.from_user.id],
-        "created_at": datetime.now().isoformat(),
-        "paid_until": None,
-        "movies": {},
-        "products": {},
-        "next_id": 1,
-        "carts": {},
-        "channels": {},
-        "users": [],
-        "stats": {},
-    }
-    save_data()
-
-    await start_child_bot(token, bot_type)
-
-    await callback.message.edit_text(
-        f"✅ {BOT_TYPES[bot_type]} ishga tushdi: <b>{bot_name}</b>\n\n"
-        f"🎁 {TRIAL_DAYS} kunlik bepul sinov boshlandi!\n"
-        "Majburiy obuna qo'shish uchun o'sha botga /channels yozing."
-    )
-    await state.clear()
-    await callback.answer()
-
-
-@main_dp.message(Command("prices"))
-async def prices_panel(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    buttons = [
-        [InlineKeyboardButton(text=f"{name} — {get_price(key):,} so'm", callback_data=f"editprice_{key}")]
-        for key, name in BOT_TYPES.items()
-    ]
-    buttons.append([InlineKeyboardButton(
-        text=f"📅 Oylik foiz: {int(get_monthly_rate()*100)}%", callback_data="editrate"
-    )])
-    await message.answer("💰 <b>Narxlarni boshqarish</b>\n\nO'zgartirish uchun tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-
-@main_dp.callback_query(F.data == "editrate")
-async def editrate_cb(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    await callback.message.answer(
-        f"Hozirgi oylik foiz: {int(get_monthly_rate()*100)}%\n\nYangi foizni kiriting (masalan: 20):"
-    )
-    await state.set_state(EditRate.waiting_percent)
-    await callback.answer()
-
-
-@main_dp.message(EditRate.waiting_percent)
-async def editrate_save(message: Message, state: FSMContext):
-    try:
-        percent = float(message.text.strip().replace("%", ""))
-        if not (0 <= percent <= 100):
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ 0 dan 100 gacha bo'lgan raqam kiriting.")
-        return
-    data["monthly_rate"] = percent / 100
-    save_data()
-    await message.answer(f"✅ Oylik foiz endi {percent:g}% qilib o'rnatildi.")
-    await state.clear()
-
-
-@main_dp.callback_query(F.data.startswith("editprice_"))
-async def editprice_cb(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    bot_type = callback.data.split("_", 1)[1]
-    await state.update_data(edit_price_type=bot_type)
-    await callback.message.answer(
-        f"{BOT_TYPES[bot_type]} uchun yangi boshlang'ich narxni kiriting (so'm, faqat raqam):"
-    )
-    await state.set_state(EditPrice.waiting_amount)
-    await callback.answer()
-
-
-@main_dp.message(EditPrice.waiting_amount)
-async def editprice_save(message: Message, state: FSMContext):
-    try:
-        amount = int(message.text.strip().replace(" ", ""))
-    except ValueError:
-        await message.answer("❌ Faqat raqam kiriting.")
-        return
-    state_data = await state.get_data()
-    bot_type = state_data.get("edit_price_type")
-    if bot_type:
-        data["prices"][bot_type] = amount
+        data["bots"][token] = {
+            "id": bot_id,
+            "type": bot_type,
+            "name": bot_name,
+            "admin_id": callback.from_user.id,
+            "admin_ids": [callback.from_user.id],
+            "created_at": datetime.now().isoformat(),
+            "paid_until": None,
+            "movies": {},
+            "products": {},
+            "next_id": 1,
+            "carts": {},
+            "channels": {},
+            "users": [],
+            "stats": {},
+        }
         save_data()
-        await message.answer(f"✅ {BOT_TYPES[bot_type]} narxi endi {amount:,} so'm.")
-    await state.clear()
 
+        await start_child_bot(token, bot_type)
 
-@main_dp.message(Command("globalbuttons"))
-async def global_buttons_panel(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    buttons = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Tugma qo'shish", callback_data="gb_add")],
-        [InlineKeyboardButton(text="📋 Tugmalar ro'yxati", callback_data="gb_list")],
-        [InlineKeyboardButton(text="➖ Tugmani o'chirish", callback_data="gb_del")],
-    ])
-    await message.answer(
-        "🧩 <b>Global tugmalar boshqaruvi</b>\n\n"
-        "Bu yerda qo'shgan tugma barcha 10 turdagi botning menyusiga avtomatik qo'shiladi.",
-        reply_markup=buttons,
-    )
-
-
-@main_dp.callback_query(F.data == "gb_add")
-async def gb_add_cb(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    await callback.message.answer("Tugma nomini yozing (masalan: ℹ️ Biz haqimizda):")
-    await state.set_state(GlobalButtonAdd.waiting_label)
-    await callback.answer()
-
-
-@main_dp.message(GlobalButtonAdd.waiting_label)
-async def gb_add_label(message: Message, state: FSMContext):
-    await state.update_data(label=message.text.strip())
-    await message.answer("Endi shu tugma bosilganda chiqadigan javob matnini yozing:")
-    await state.set_state(GlobalButtonAdd.waiting_response)
-
-
-@main_dp.message(GlobalButtonAdd.waiting_response)
-async def gb_add_response(message: Message, state: FSMContext):
-    state_data = await state.get_data()
-    label = state_data.get("label")
-    data["global_buttons"].append({"label": label, "response": message.text})
-    save_data()
-    await message.answer(f"✅ Tugma qo'shildi: {label}\n\nEndi barcha botlarda ko'rinadi.")
-    await state.clear()
-
-
-@main_dp.callback_query(F.data == "gb_list")
-async def gb_list_cb(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    if not data["global_buttons"]:
-        await callback.message.answer("Hozircha global tugmalar yo'q.")
-    else:
-        text = "📋 <b>Global tugmalar:</b>\n\n" + "\n".join(f"• {b['label']}" for b in data["global_buttons"])
-        await callback.message.answer(text)
-    await callback.answer()
-
-
-@main_dp.callback_query(F.data == "gb_del")
-async def gb_del_cb(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    if not data["global_buttons"]:
-        await callback.message.answer("O'chirish uchun tugma yo'q.")
+        await callback.message.edit_text(
+            f"✅ {BOT_TYPES[bot_type]} ishga tushdi: <b>{bot_name}</b>\n\n"
+            f"🎁 {TRIAL_DAYS} kunlik bepul sinov boshlandi!\n"
+            "Majburiy obuna qo'shish uchun o'sha botga /channels yozing."
+        )
+        await state.clear()
         await callback.answer()
-        return
-    buttons = [
-        [InlineKeyboardButton(text=b["label"], callback_data=f"gbdel_{i}")]
-        for i, b in enumerate(data["global_buttons"])
-    ]
-    await callback.message.answer("O'chirmoqchi bo'lgan tugmani tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await callback.answer()
 
+    @dp.message(Command("prices"))
+    async def prices_panel(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        buttons = [
+            [InlineKeyboardButton(text=f"{name} — {get_price(key):,} so'm", callback_data=f"editprice_{key}")]
+            for key, name in BOT_TYPES.items()
+        ]
+        buttons.append([InlineKeyboardButton(
+            text=f"📅 Oylik foiz: {int(get_monthly_rate()*100)}%", callback_data="editrate"
+        )])
+        await message.answer("💰 <b>Narxlarni boshqarish</b>\n\nO'zgartirish uchun tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@main_dp.callback_query(F.data.startswith("gbdel_"))
-async def gb_delid_cb(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    idx = int(callback.data.split("_", 1)[1])
-    if 0 <= idx < len(data["global_buttons"]):
-        removed = data["global_buttons"].pop(idx)
+    @dp.callback_query(F.data == "editrate")
+    async def editrate_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        await callback.message.answer(
+            f"Hozirgi oylik foiz: {int(get_monthly_rate()*100)}%\n\nYangi foizni kiriting (masalan: 20):"
+        )
+        await state.set_state(EditRate.waiting_percent)
+        await callback.answer()
+
+    @dp.message(EditRate.waiting_percent)
+    async def editrate_save(message: Message, state: FSMContext):
+        try:
+            percent = float(message.text.strip().replace("%", ""))
+            if not (0 <= percent <= 100):
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ 0 dan 100 gacha bo'lgan raqam kiriting.")
+            return
+        data["monthly_rate"] = percent / 100
         save_data()
-        await callback.message.answer(f"🗑 O'chirildi: {removed['label']}")
-    await callback.answer()
+        await message.answer(f"✅ Oylik foiz endi {percent:g}% qilib o'rnatildi.")
+        await state.clear()
 
+    @dp.callback_query(F.data.startswith("editprice_"))
+    async def editprice_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        bot_type = callback.data.split("_", 1)[1]
+        await state.update_data(edit_price_type=bot_type)
+        await callback.message.answer(
+            f"{BOT_TYPES[bot_type]} uchun yangi boshlang'ich narxni kiriting (so'm, faqat raqam):"
+        )
+        await state.set_state(EditPrice.waiting_amount)
+        await callback.answer()
 
-@main_dp.message(Command("mybots"))
-async def mybots(message: Message):
-    uid = message.from_user.id
-    if uid == ADMIN_ID:
-        items = list(data["bots"].items())
-    else:
-        items = [(t, i) for t, i in data["bots"].items() if uid in i.get("admin_ids", [i["admin_id"]])]
+    @dp.message(EditPrice.waiting_amount)
+    async def editprice_save(message: Message, state: FSMContext):
+        try:
+            amount = int(message.text.strip().replace(" ", ""))
+        except ValueError:
+            await message.answer("❌ Faqat raqam kiriting.")
+            return
+        state_data = await state.get_data()
+        bot_type = state_data.get("edit_price_type")
+        if bot_type:
+            data["prices"][bot_type] = amount
+            save_data()
+            await message.answer(f"✅ {BOT_TYPES[bot_type]} narxi endi {amount:,} so'm.")
+        await state.clear()
 
-    if not items:
-        await message.answer("Hali botlaringiz yo'q. /newbot orqali yarating.")
-        return
+    @dp.message(Command("globalbuttons"))
+    async def global_buttons_panel(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        buttons = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Tugma qo'shish", callback_data="gb_add")],
+            [InlineKeyboardButton(text="📋 Tugmalar ro'yxati", callback_data="gb_list")],
+            [InlineKeyboardButton(text="➖ Tugmani o'chirish", callback_data="gb_del")],
+        ])
+        await message.answer(
+            "🧩 <b>Global tugmalar boshqaruvi</b>\n\n"
+            "Bu yerda qo'shgan tugma barcha turdagi botning menyusiga avtomatik qo'shiladi.",
+            reply_markup=buttons,
+        )
 
-    for token, info in items:
-        status = "🟢 Faol" if is_active(info) else "🔴 Sinov/to'lov tugagan"
-        paid_until = info.get("paid_until")
-        if paid_until:
-            date_str = datetime.fromisoformat(paid_until).strftime("%d.%m.%Y")
-            paid_note = f" (to'langan: {date_str} gacha)"
+    @dp.callback_query(F.data == "gb_add")
+    async def gb_add_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        await callback.message.answer("Tugma nomini yozing (masalan: ℹ️ Biz haqimizda):")
+        await state.set_state(GlobalButtonAdd.waiting_label)
+        await callback.answer()
+
+    @dp.message(GlobalButtonAdd.waiting_label)
+    async def gb_add_label(message: Message, state: FSMContext):
+        await state.update_data(label=message.text.strip())
+        await message.answer("Endi shu tugma bosilganda chiqadigan javob matnini yozing:")
+        await state.set_state(GlobalButtonAdd.waiting_response)
+
+    @dp.message(GlobalButtonAdd.waiting_response)
+    async def gb_add_response(message: Message, state: FSMContext):
+        state_data = await state.get_data()
+        label = state_data.get("label")
+        data["global_buttons"].append({"label": label, "response": message.text})
+        save_data()
+        await message.answer(f"✅ Tugma qo'shildi: {label}\n\nEndi barcha botlarda ko'rinadi.")
+        await state.clear()
+
+    @dp.callback_query(F.data == "gb_list")
+    async def gb_list_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        if not data["global_buttons"]:
+            await callback.message.answer("Hozircha global tugmalar yo'q.")
         else:
-            paid_note = ""
-        text = f"{BOT_TYPES.get(info['type'])}: <b>{info['name']}</b>\n{status}{paid_note}"
-        if uid == ADMIN_ID and info["admin_id"] != ADMIN_ID:
-            text += f"\n👤 Egasi ID: {info['admin_id']}"
-        kb = None
+            text = "📋 <b>Global tugmalar:</b>\n\n" + "\n".join(f"• {b['label']}" for b in data["global_buttons"])
+            await callback.message.answer(text)
+        await callback.answer()
+
+    @dp.callback_query(F.data == "gb_del")
+    async def gb_del_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        if not data["global_buttons"]:
+            await callback.message.answer("O'chirish uchun tugma yo'q.")
+            await callback.answer()
+            return
+        buttons = [
+            [InlineKeyboardButton(text=b["label"], callback_data=f"gbdel_{i}")]
+            for i, b in enumerate(data["global_buttons"])
+        ]
+        await callback.message.answer("O'chirmoqchi bo'lgan tugmani tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("gbdel_"))
+    async def gb_delid_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        idx = int(callback.data.split("_", 1)[1])
+        if 0 <= idx < len(data["global_buttons"]):
+            removed = data["global_buttons"].pop(idx)
+            save_data()
+            await callback.message.answer(f"🗑 O'chirildi: {removed['label']}")
+        await callback.answer()
+
+    @dp.message(Command("mybots"))
+    async def mybots(message: Message):
+        uid = message.from_user.id
         if uid == ADMIN_ID:
-            amount = next_payment_amount(info)
-            buttons = [[InlineKeyboardButton(text=f"✅ To'lovni tasdiqlash ({amount:,} so'm)", callback_data=f"activate_{info['id']}")]]
-            if info.get("paid_until"):
-                buttons.append([InlineKeyboardButton(text="❌ Tasdiqdan chiqarish", callback_data=f"deactivate_{info['id']}")])
-            kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await message.answer(text, reply_markup=kb)
+            items = list(data["bots"].items())
+        else:
+            items = [(t, i) for t, i in data["bots"].items() if uid in i.get("admin_ids", [i["admin_id"]])]
+
+        if not items:
+            await message.answer("Hali botlaringiz yo'q. /newbot orqali yarating.")
+            return
+
+        for token, info in items:
+            status = "🟢 Faol" if is_active(info) else "🔴 Sinov/to'lov tugagan"
+            paid_until = info.get("paid_until")
+            if paid_until:
+                date_str = datetime.fromisoformat(paid_until).strftime("%d.%m.%Y")
+                paid_note = f" (to'langan: {date_str} gacha)"
+            else:
+                paid_note = ""
+            text = f"{BOT_TYPES.get(info['type'])}: <b>{info['name']}</b>\n{status}{paid_note}"
+            if uid == ADMIN_ID and info["admin_id"] != ADMIN_ID:
+                text += f"\n👤 Egasi ID: {info['admin_id']}"
+            kb = None
+            if uid == ADMIN_ID:
+                amount = next_payment_amount(info)
+                buttons = [[InlineKeyboardButton(text=f"✅ To'lovni tasdiqlash ({amount:,} so'm)", callback_data=f"activate_{info['id']}")]]
+                if info.get("paid_until"):
+                    buttons.append([InlineKeyboardButton(text="❌ Tasdiqdan chiqarish", callback_data=f"deactivate_{info['id']}")])
+                kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+            await message.answer(text, reply_markup=kb)
+
+    @dp.callback_query(F.data.startswith("activate_"))
+    async def activate_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        bot_id = int(callback.data.split("_", 1)[1])
+        await state.update_data(activate_bot_id=bot_id)
+        await callback.message.answer("Necha kunga faollashtirilsin? (masalan: 30):")
+        await state.set_state(ActivateFlow.waiting_days)
+        await callback.answer()
+
+    @dp.message(ActivateFlow.waiting_days)
+    async def activate_days_save(message: Message, state: FSMContext):
+        try:
+            days = int(message.text.strip())
+            if days <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting (masalan: 30).")
+            return
+        state_data = await state.get_data()
+        bot_id = state_data.get("activate_bot_id")
+        for token, info in data["bots"].items():
+            if info.get("id") == bot_id:
+                expiry = datetime.now() + timedelta(days=days)
+                info["paid_until"] = expiry.isoformat()
+                save_data()
+                await message.answer(f"✅ {info['name']} bot {expiry.strftime('%d.%m.%Y')} sanagacha faollashtirildi.")
+                break
+        await state.clear()
+
+    @dp.callback_query(F.data.startswith("deactivate_"))
+    async def deactivate_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        bot_id = int(callback.data.split("_", 1)[1])
+        for token, info in data["bots"].items():
+            if info.get("id") == bot_id:
+                info["paid_until"] = None
+                save_data()
+                await callback.message.answer(f"❌ {info['name']} bot tasdiqdan chiqarildi (to'lov holati bekor qilindi).")
+                break
+        await callback.answer()
+
+    # ---- RAVSHAN BUILDER BOTning to'liq nusxasini (klon) yaratish — FAQAT ADMIN_ID ----
+    @dp.message(Command("newplatform"))
+    async def newplatform_start(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await message.answer(
+            "🏗 <b>RAVSHAN BUILDER BOTning yangi nusxasini yaratish</b>\n\n"
+            "@BotFather orqali yangi bot yarating va uning tokenini shu yerga yuboring.\n"
+            "Token yuborilishi bilan bu yangi bot — hozirgi bot bilan bir xil, "
+            "to'liq ishlaydigan RAVSHAN BUILDER BOT nusxasiga aylanadi "
+            "(bir xil botlar bazasi, bir xil narxlar, siz — bir xil admin)."
+        )
+        await state.set_state(NewPlatformFlow.waiting_token)
+
+    @dp.message(NewPlatformFlow.waiting_token)
+    async def newplatform_token(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            await state.clear()
+            return
+        clone_token = message.text.strip()
+        try:
+            test_bot = Bot(token=clone_token)
+            me = await test_bot.get_me()
+            await test_bot.session.close()
+        except Exception:
+            await message.answer("❌ Token noto'g'ri. Qaytadan yuboring.")
+            return
+
+        await start_platform_clone(clone_token, me.username)
+        await message.answer(
+            f"✅ Tayyor! @{me.username} — bu endi to'liq RAVSHAN BUILDER BOT nusxasi.\n\n"
+            "U orqali ham /newbot bilan botlar yaratish, /mybots, /prices, /globalbuttons "
+            "— hammasi ishlaydi, xuddi shu botdagidek."
+        )
+        await state.clear()
 
 
-@main_dp.callback_query(F.data.startswith("activate_"))
-async def activate_cb(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
+async def start_platform_clone(token: str, username: str = None):
+    """RAVSHAN BUILDER BOTning to'liq nusxasini berilgan token bilan ishga tushiradi."""
+    if token in running_platform_clones:
         return
-    bot_id = int(callback.data.split("_", 1)[1])
-    await state.update_data(activate_bot_id=bot_id)
-    await callback.message.answer("Necha kunga faollashtirilsin? (masalan: 30):")
-    await state.set_state(ActivateFlow.waiting_days)
-    await callback.answer()
+    clone_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    clone_dp = Dispatcher(storage=MemoryStorage())
+    setup_platform_bot(clone_dp)
+    task = asyncio.create_task(clone_dp.start_polling(clone_bot))
+    running_platform_clones[token] = task
+
+    if not any(c["token"] == token for c in data["platform_clones"]):
+        data["platform_clones"].append({
+            "token": token,
+            "username": username,
+            "created_at": datetime.now().isoformat(),
+        })
+        save_data()
 
 
-@main_dp.message(ActivateFlow.waiting_days)
-async def activate_days_save(message: Message, state: FSMContext):
-    try:
-        days = int(message.text.strip())
-        if days <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Musbat butun raqam kiriting (masalan: 30).")
-        return
-    state_data = await state.get_data()
-    bot_id = state_data.get("activate_bot_id")
-    for token, info in data["bots"].items():
-        if info.get("id") == bot_id:
-            expiry = datetime.now() + timedelta(days=days)
-            info["paid_until"] = expiry.isoformat()
-            save_data()
-            await message.answer(f"✅ {info['name']} bot {expiry.strftime('%d.%m.%Y')} sanagacha faollashtirildi.")
-            break
-    await state.clear()
-
-
-@main_dp.callback_query(F.data.startswith("deactivate_"))
-async def deactivate_cb(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    bot_id = int(callback.data.split("_", 1)[1])
-    for token, info in data["bots"].items():
-        if info.get("id") == bot_id:
-            info["paid_until"] = None
-            save_data()
-            await callback.message.answer(f"❌ {info['name']} bot tasdiqdan chiqarildi (to'lov holati bekor qilindi).")
-            break
-    await callback.answer()
+setup_platform_bot(main_dp)
 
 
 # ---------- Kino bot ----------
@@ -2216,552 +2221,6 @@ def setup_survey_bot(dp: Dispatcher, token: str):
             await message.answer(f"{q_index+1}) {info['questions'][q_index]}")
 
 
-# ---------- Taxi bot ----------
-def setup_taxi_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("rides", 0)
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_global_buttons_handler(dp, lambda m, s: taxistart(m))
-
-    def user_kb():
-        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚕 Taxi chaqirish")]] + get_global_button_rows(), resize_keyboard=True)
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-        ] + get_global_button_rows(), resize_keyboard=True)
-
-    @dp.message(Command("start"))
-    async def taxistart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("🚕 <b>Taxi bot boshqaruvi</b>", reply_markup=admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer("🚕 Taxi chaqirish uchun tugmani bosing:", reply_markup=user_kb())
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def taxi_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n🚕 Buyurtmalar: {info['stats']['rides']}"
-        )
-
-    @dp.message(F.text == "🚕 Taxi chaqirish")
-    async def taxi_order_start(message: Message, state: FSMContext):
-        if not await check_active(message, info, admin_id):
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer("📍 Qayerdan olib ketish kerak? Manzilni yozing:")
-        await state.set_state(TaxiFlow.waiting_from)
-
-    @dp.message(TaxiFlow.waiting_from)
-    async def taxi_from(message: Message, state: FSMContext):
-        await state.update_data(from_addr=message.text.strip())
-        await message.answer("📍 Qayerga borasiz?")
-        await state.set_state(TaxiFlow.waiting_to)
-
-    @dp.message(TaxiFlow.waiting_to)
-    async def taxi_to(message: Message, state: FSMContext):
-        await state.update_data(to_addr=message.text.strip())
-        await message.answer("📞 Telefon raqamingizni yuboring:")
-        await state.set_state(TaxiFlow.waiting_phone)
-
-    @dp.message(TaxiFlow.waiting_phone)
-    async def taxi_phone(message: Message, state: FSMContext):
-        state_data = await state.get_data()
-        from_addr = state_data.get("from_addr")
-        to_addr = state_data.get("to_addr")
-        phone = message.text.strip()
-        username = message.from_user.username or message.from_user.id
-        text = (
-            f"🚕 <b>Yangi taxi buyurtma!</b>\nMijoz: @{username}\n"
-            f"📍 Qayerdan: {from_addr}\n📍 Qayerga: {to_addr}\n📞 Tel: {phone}"
-        )
-        await message.bot.send_message(admin_id, text)
-        info["stats"]["rides"] += 1
-        save_data()
-        await message.answer("✅ Buyurtmangiz qabul qilindi! Tez orada haydovchi bog'lanadi.")
-        await state.clear()
-
-
-# ---------- Ta'lim/Test bot ----------
-def setup_test_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("tests_taken", 0)
-    info.setdefault("test_questions", [])
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_global_buttons_handler(dp, lambda m, s: teststart(m))
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="➕ Savol qo'shish"), KeyboardButton(text="📋 Savollar")],
-            [KeyboardButton(text="🗑 Savolni o'chirish"), KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-        ] + get_global_button_rows(), resize_keyboard=True)
-
-    def user_kb():
-        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📝 Testni boshlash")]] + get_global_button_rows(), resize_keyboard=True)
-
-    @dp.message(Command("start"))
-    async def teststart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("🎓 <b>Ta'lim/Test bot boshqaruvi</b>", reply_markup=admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer("🎓 Test botga xush kelibsiz!", reply_markup=user_kb())
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def test_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n"
-            f"🎓 Testdan o'tganlar: {info['stats']['tests_taken']}\n❓ Savollar: {len(info['test_questions'])}"
-        )
-
-    @dp.message(F.text == "➕ Savol qo'shish")
-    async def tq_start(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer("Savol matnini yozing:")
-        await state.set_state(TestAdmin.waiting_question)
-
-    @dp.message(TestAdmin.waiting_question)
-    async def tq_question(message: Message, state: FSMContext):
-        await state.update_data(question=message.text.strip())
-        await message.answer("Javob variantlarini vergul bilan ajratib yozing (masalan: Toshkent, Samarqand, Buxoro):")
-        await state.set_state(TestAdmin.waiting_options)
-
-    @dp.message(TestAdmin.waiting_options)
-    async def tq_options(message: Message, state: FSMContext):
-        options = [o.strip() for o in message.text.split(",") if o.strip()]
-        if len(options) < 2:
-            await message.answer("❌ Kamida 2 ta variant kiriting, vergul bilan ajrating.")
-            return
-        await state.update_data(options=options)
-        opts_text = "\n".join(f"{i+1}) {o}" for i, o in enumerate(options))
-        await message.answer(f"To'g'ri javob raqamini yuboring:\n\n{opts_text}")
-        await state.set_state(TestAdmin.waiting_correct)
-
-    @dp.message(TestAdmin.waiting_correct)
-    async def tq_correct(message: Message, state: FSMContext):
-        state_data = await state.get_data()
-        options = state_data.get("options", [])
-        try:
-            correct = int(message.text.strip()) - 1
-            if not (0 <= correct < len(options)):
-                raise ValueError
-        except ValueError:
-            await message.answer("❌ To'g'ri raqamni kiriting.")
-            return
-        info["test_questions"].append({"q": state_data["question"], "options": options, "correct": correct})
-        save_data()
-        await message.answer(f"✅ Savol qo'shildi ({len(info['test_questions'])}-savol).")
-        await state.clear()
-
-    @dp.message(F.text == "📋 Savollar")
-    async def tq_list(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["test_questions"]:
-            await message.answer("Savollar yo'q.")
-            return
-        text = "📋 <b>Savollar:</b>\n\n" + "\n".join(f"{i+1}) {q['q']}" for i, q in enumerate(info["test_questions"]))
-        await message.answer(text)
-
-    @dp.message(F.text == "🗑 Savolni o'chirish")
-    async def tq_del_start(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["test_questions"]:
-            await message.answer("O'chirish uchun savol yo'q.")
-            return
-        buttons = [[InlineKeyboardButton(text=f"{i+1}) {q['q'][:30]}", callback_data=f"deltq_{i}")] for i, q in enumerate(info["test_questions"])]
-        await message.answer("O'chirmoqchi bo'lgan savolni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-    @dp.callback_query(F.data.startswith("deltq_"))
-    async def tq_del_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        idx = int(callback.data.split("_", 1)[1])
-        if 0 <= idx < len(info["test_questions"]):
-            removed = info["test_questions"].pop(idx)
-            save_data()
-            await callback.message.answer(f"🗑 O'chirildi: {removed['q']}")
-        await callback.answer()
-
-    async def send_test_question(send_func, idx):
-        q = info["test_questions"][idx]
-        buttons = [[InlineKeyboardButton(text=opt, callback_data=f"tans_{idx}_{i}")] for i, opt in enumerate(q["options"])]
-        await send_func(q["q"], reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-    @dp.message(F.text == "📝 Testni boshlash")
-    async def start_test(message: Message, state: FSMContext):
-        if not info["test_questions"]:
-            await message.answer("Hozircha savollar yo'q.")
-            return
-        await state.update_data(score=0, q_index=0)
-        await state.set_state(TestAnswer.answering)
-        await send_test_question(message.answer, 0)
-
-    @dp.callback_query(F.data.startswith("tans_"), TestAnswer.answering)
-    async def test_answer_cb(callback: CallbackQuery, state: FSMContext):
-        _, idx, choice = callback.data.split("_")
-        idx, choice = int(idx), int(choice)
-        state_data = await state.get_data()
-        score = state_data.get("score", 0)
-        correct = info["test_questions"][idx]["correct"]
-        if choice == correct:
-            score += 1
-            await callback.answer("✅ To'g'ri!")
-        else:
-            await callback.answer("❌ Noto'g'ri!")
-        next_idx = idx + 1
-        if next_idx >= len(info["test_questions"]):
-            info["stats"]["tests_taken"] += 1
-            save_data()
-            await callback.message.answer(f"🎓 Test tugadi!\nNatija: {score}/{len(info['test_questions'])}")
-            await state.clear()
-        else:
-            await state.update_data(score=score, q_index=next_idx)
-            await send_test_question(callback.message.answer, next_idx)
-
-
-# ---------- Fitnes/Dieta bot ----------
-def setup_fitness_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("bmi_checks", 0)
-    info["stats"].setdefault("plans_generated", 0)
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_global_buttons_handler(dp, lambda m, s: fstart(m))
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-        ], resize_keyboard=True)
-
-    def user_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="📏 BMI hisoblash")],
-            [KeyboardButton(text="💪 Mashqlar tavsiyasi"), KeyboardButton(text="🥗 Ovqatlanish tavsiyasi")],
-        ], resize_keyboard=True)
-
-    def goal_kb():
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔥 Vazn tashlash", callback_data="goal_lose")],
-            [InlineKeyboardButton(text="💪 Mushak orttirish", callback_data="goal_gain")],
-            [InlineKeyboardButton(text="🌿 Sog'lom turmush tarzi", callback_data="goal_health")],
-        ])
-
-    @dp.message(Command("start"))
-    async def fstart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("🏋️ <b>Fitnes/Dieta bot boshqaruvi</b>", reply_markup=admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer(
-            "🏋️ Salom! Men sizga umumiy fitnes va ovqatlanish bo'yicha tavsiyalar bera olaman.\n\n"
-            "⚠️ Bu tavsiyalar umumiy xarakterga ega — jiddiy sog'liq muammolari bo'lsa shifokor/mutaxassisga murojaat qiling.",
-            reply_markup=user_kb(),
-        )
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def fitness_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n"
-            f"📏 BMI hisoblashlar: {info['stats']['bmi_checks']}\n"
-            f"💪 Yaratilgan rejalar: {info['stats']['plans_generated']}"
-        )
-
-    @dp.message(F.text == "📢 Xabar yuborish")
-    async def f_newpost(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer("E'lon matnini yuboring:")
-        await state.set_state(PostFlow.waiting_text)
-
-    @dp.message(PostFlow.waiting_text)
-    async def f_post_text(message: Message, state: FSMContext):
-        await state.update_data(text=message.text)
-        buttons = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Yuborish", callback_data="f_post_confirm")],
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="f_post_cancel")],
-        ])
-        await message.answer(f"{len(info['users'])} kishiga yuborilsinmi?\n\n{message.text}", reply_markup=buttons)
-        await state.set_state(PostFlow.waiting_confirm)
-
-    @dp.callback_query(F.data == "f_post_confirm", PostFlow.waiting_confirm)
-    async def f_post_confirm(callback: CallbackQuery, state: FSMContext):
-        state_data = await state.get_data()
-        text = state_data.get("text", "")
-        count = 0
-        for uid in info["users"]:
-            try:
-                await callback.bot.send_message(uid, text)
-                count += 1
-            except Exception:
-                pass
-        await callback.message.edit_text(f"✅ {count} kishiga yuborildi.")
-        await state.clear()
-        await callback.answer()
-
-    @dp.callback_query(F.data == "f_post_cancel", PostFlow.waiting_confirm)
-    async def f_post_cancel(callback: CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("❌ Bekor qilindi.")
-        await state.clear()
-        await callback.answer()
-
-    @dp.message(F.text == "📏 BMI hisoblash")
-    async def bmi_start(message: Message, state: FSMContext):
-        await message.answer("Vazningizni kilogrammda yozing (masalan: 70):")
-        await state.set_state(BMIFlow.waiting_weight)
-
-    @dp.message(BMIFlow.waiting_weight)
-    async def bmi_weight(message: Message, state: FSMContext):
-        try:
-            weight = float(message.text.strip().replace(",", "."))
-        except ValueError:
-            await message.answer("❌ Faqat raqam kiriting.")
-            return
-        await state.update_data(weight=weight)
-        await message.answer("Bo'yingizni santimetrda yozing (masalan: 175):")
-        await state.set_state(BMIFlow.waiting_height)
-
-    @dp.message(BMIFlow.waiting_height)
-    async def bmi_height(message: Message, state: FSMContext):
-        try:
-            height = float(message.text.strip().replace(",", "."))
-        except ValueError:
-            await message.answer("❌ Faqat raqam kiriting.")
-            return
-        state_data = await state.get_data()
-        weight = state_data.get("weight", 0)
-        bmi = weight / ((height / 100) ** 2)
-        if bmi < 18.5:
-            category = "Kam vazn"
-        elif bmi < 25:
-            category = "Normal vazn"
-        elif bmi < 30:
-            category = "Ortiqcha vazn"
-        else:
-            category = "Semizlik darajasi"
-        info["stats"]["bmi_checks"] += 1
-        save_data()
-        await message.answer(
-            f"📏 Sizning BMI ko'rsatkichingiz: <b>{bmi:.1f}</b> ({category})\n\n"
-            "⚠️ Bu faqat umumiy ma'lumot, aniq tashxis uchun shifokorga murojaat qiling."
-        )
-        await state.clear()
-
-    @dp.message(F.text == "💪 Mashqlar tavsiyasi")
-    async def workout_start(message: Message):
-        await message.answer("Maqsadingizni tanlang:", reply_markup=goal_kb())
-
-    @dp.callback_query(F.data.startswith("goal_"))
-    async def workout_goal(callback: CallbackQuery):
-        goal_map = {"goal_lose": "vazn tashlash", "goal_gain": "mushak orttirish", "goal_health": "sog'lom turmush tarzi"}
-        goal = goal_map.get(callback.data, "sog'lom turmush tarzi")
-        thinking = await callback.message.answer("💭 Reja tayyorlanmoqda...")
-        try:
-            plan = await ask_gemini(
-                f"'{goal}' maqsadida oddiy odam uchun haftalik (5-6 kunlik) umumiy mashqlar rejasini "
-                "o'zbek tilida, oddiy va tushunarli qilib yoz. Har bir kun uchun qisqa mashqlar ro'yxati bo'lsin. "
-                "Oxirida shifokor/murabbiyga murojaat qilish tavsiyasini qo'sh."
-            )
-            info["stats"]["plans_generated"] += 1
-            save_data()
-            await thinking.edit_text(plan)
-        except Exception as e:
-            logging.error(f"Xatolik: {e}")
-            await thinking.edit_text("Xatolik yuz berdi.")
-        await callback.answer()
-
-    @dp.message(F.text == "🥗 Ovqatlanish tavsiyasi")
-    async def nutrition_tip(message: Message):
-        thinking = await message.answer("💭 Tavsiyalar tayyorlanmoqda...")
-        try:
-            tips = await ask_gemini(
-                "Umumiy sog'lom ovqatlanish bo'yicha 5-6 ta oddiy, umumiy tavsiya ber (o'zbek tilida). "
-                "Aniq kaloriya sonlari yoki qattiq cheklovli dietalar bermang — faqat umumiy, ijobiy maslahatlar. "
-                "Oxirida shaxsiy reja uchun mutaxassisga murojaat qilishni tavsiya qil."
-            )
-            await thinking.edit_text(tips)
-        except Exception as e:
-            logging.error(f"Xatolik: {e}")
-            await thinking.edit_text("Xatolik yuz berdi.")
-
-
-# ---------- Namoz vaqtlari bot ----------
-async def fetch_prayer_times(city: str, country: str = "Uzbekistan") -> dict:
-    url = "https://api.aladhan.com/v1/timingsByCity"
-    params = {"city": city, "country": country, "method": "2"}
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        result = resp.json()
-        return result["data"]["timings"]
-
-
-def setup_prayer_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("requests", 0)
-    info.setdefault("user_city", {})
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_global_buttons_handler(dp, lambda m, s: praystart(m, s))
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-        ], resize_keyboard=True)
-
-    def user_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="🕌 Bugungi namoz vaqtlari")],
-            [KeyboardButton(text="📍 Shahrimni o'zgartirish")],
-        ], resize_keyboard=True)
-
-    @dp.message(Command("start"))
-    async def praystart(message: Message, state: FSMContext):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("🕌 <b>Namoz vaqtlari bot boshqaruvi</b>", reply_markup=admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        if str(uid) not in info["user_city"]:
-            await message.answer("📍 Qaysi shahar uchun namoz vaqtlarini ko'rsataylik? (masalan: Tashkent)")
-            await state.set_state(CityFlow.waiting_city)
-            return
-        await message.answer("🕌 Namoz vaqtlari botiga xush kelibsiz!", reply_markup=user_kb())
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def prayer_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n"
-            f"🕌 So'rovlar: {info['stats']['requests']}"
-        )
-
-    @dp.message(F.text == "📢 Xabar yuborish")
-    async def p_newpost(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer("E'lon matnini yuboring:")
-        await state.set_state(PostFlow.waiting_text)
-
-    @dp.message(PostFlow.waiting_text)
-    async def p_post_text(message: Message, state: FSMContext):
-        await state.update_data(text=message.text)
-        buttons = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Yuborish", callback_data="p_post_confirm")],
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="p_post_cancel")],
-        ])
-        await message.answer(f"{len(info['users'])} kishiga yuborilsinmi?\n\n{message.text}", reply_markup=buttons)
-        await state.set_state(PostFlow.waiting_confirm)
-
-    @dp.callback_query(F.data == "p_post_confirm", PostFlow.waiting_confirm)
-    async def p_post_confirm(callback: CallbackQuery, state: FSMContext):
-        state_data = await state.get_data()
-        text = state_data.get("text", "")
-        count = 0
-        for uid in info["users"]:
-            try:
-                await callback.bot.send_message(uid, text)
-                count += 1
-            except Exception:
-                pass
-        await callback.message.edit_text(f"✅ {count} kishiga yuborildi.")
-        await state.clear()
-        await callback.answer()
-
-    @dp.callback_query(F.data == "p_post_cancel", PostFlow.waiting_confirm)
-    async def p_post_cancel(callback: CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("❌ Bekor qilindi.")
-        await state.clear()
-        await callback.answer()
-
-    @dp.message(F.text == "📍 Shahrimni o'zgartirish")
-    async def change_city_start(message: Message, state: FSMContext):
-        await message.answer("📍 Qaysi shahar uchun namoz vaqtlarini ko'rsataylik?")
-        await state.set_state(CityFlow.waiting_city)
-
-    @dp.message(CityFlow.waiting_city)
-    async def set_city(message: Message, state: FSMContext):
-        city = message.text.strip()
-        info["user_city"][str(message.from_user.id)] = city
-        save_data()
-        await message.answer(f"✅ Shahar saqlandi: {city}", reply_markup=user_kb())
-        await state.clear()
-
-    @dp.message(F.text == "🕌 Bugungi namoz vaqtlari")
-    async def get_prayer_times(message: Message):
-        city = info["user_city"].get(str(message.from_user.id), "Tashkent")
-        thinking = await message.answer("🕌 Vaqtlar olinmoqda...")
-        try:
-            timings = await fetch_prayer_times(city)
-            info["stats"]["requests"] += 1
-            save_data()
-            text = (
-                f"🕌 <b>{city}</b> uchun bugungi namoz vaqtlari:\n\n"
-                f"🌅 Bomdod (Fajr): {timings.get('Fajr')}\n"
-                f"☀️ Quyosh chiqishi: {timings.get('Sunrise')}\n"
-                f"🌞 Peshin (Dhuhr): {timings.get('Dhuhr')}\n"
-                f"🌇 Asr: {timings.get('Asr')}\n"
-                f"🌆 Shom (Maghrib): {timings.get('Maghrib')}\n"
-                f"🌙 Xufton (Isha): {timings.get('Isha')}"
-            )
-            await thinking.edit_text(text)
-        except Exception as e:
-            logging.error(f"Xatolik: {e}")
-            await thinking.edit_text("❌ Vaqtlarni olishda xatolik. Shahar nomini to'g'ri kiriting (masalan: Tashkent, Samarkand).")
-
-
 # ---------- Ob-havo bot ----------
 def setup_weather_bot(dp: Dispatcher, token: str):
     info = data["bots"][token]
@@ -2841,277 +2300,6 @@ def setup_weather_bot(dp: Dispatcher, token: str):
         await state.clear()
 
 
-# ---------- Futbol natijalar bot ----------
-def setup_football_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("views", 0)
-    info.setdefault("matches", [])
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_global_buttons_handler(dp, lambda m, s: fbstart(m))
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="➕ Natija qo'shish"), KeyboardButton(text="📋 Natijalar")],
-            [KeyboardButton(text="🗑 Natijani o'chirish"), KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-        ], resize_keyboard=True)
-
-    def user_kb():
-        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⚽ Natijalar")]], resize_keyboard=True)
-
-    @dp.message(Command("start"))
-    async def fbstart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("⚽ <b>Futbol natijalar bot boshqaruvi</b>", reply_markup=admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer("⚽ Futbol natijalar botiga xush kelibsiz!", reply_markup=user_kb())
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def football_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n"
-            f"👀 Ko'rishlar: {info['stats']['views']}\n⚽ Natijalar soni: {len(info['matches'])}"
-        )
-
-    @dp.message(F.text == "➕ Natija qo'shish")
-    async def add_match_start(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer("Jamoalarni yozing (masalan: Pakhtakor - Bunyodkor):")
-        await state.set_state(FootballAdmin.waiting_match)
-
-    @dp.message(FootballAdmin.waiting_match)
-    async def add_match_teams(message: Message, state: FSMContext):
-        await state.update_data(match=message.text.strip())
-        await message.answer("Natijani yozing (masalan: 2:1):")
-        await state.set_state(FootballAdmin.waiting_score)
-
-    @dp.message(FootballAdmin.waiting_score)
-    async def add_match_score(message: Message, state: FSMContext):
-        await state.update_data(score=message.text.strip())
-        await message.answer("Sanani yozing (masalan: 05.07.2026):")
-        await state.set_state(FootballAdmin.waiting_date)
-
-    @dp.message(FootballAdmin.waiting_date)
-    async def add_match_date(message: Message, state: FSMContext):
-        state_data = await state.get_data()
-        info["matches"].append({
-            "match": state_data["match"], "score": state_data["score"], "date": message.text.strip()
-        })
-        save_data()
-        await message.answer("✅ Natija qo'shildi.")
-        await state.clear()
-
-    @dp.message(F.text == "📋 Natijalar")
-    async def list_matches_admin(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["matches"]:
-            await message.answer("Hozircha natijalar yo'q.")
-            return
-        text = "📋 <b>Barcha natijalar:</b>\n\n" + "\n".join(
-            f"{i+1}) {m['date']}: {m['match']} — {m['score']}" for i, m in enumerate(info["matches"])
-        )
-        await message.answer(text)
-
-    @dp.message(F.text == "🗑 Natijani o'chirish")
-    async def del_match_start(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["matches"]:
-            await message.answer("O'chirish uchun natija yo'q.")
-            return
-        buttons = [
-            [InlineKeyboardButton(text=f"{m['match']} ({m['score']})", callback_data=f"delmatch_{i}")]
-            for i, m in enumerate(info["matches"])
-        ]
-        await message.answer("O'chirmoqchi bo'lgan natijani tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-    @dp.callback_query(F.data.startswith("delmatch_"))
-    async def del_match_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        idx = int(callback.data.split("_", 1)[1])
-        if 0 <= idx < len(info["matches"]):
-            removed = info["matches"].pop(idx)
-            save_data()
-            await callback.message.answer(f"🗑 O'chirildi: {removed['match']}")
-        await callback.answer()
-
-    @dp.message(F.text == "⚽ Natijalar")
-    async def list_matches_user(message: Message):
-        if not await check_active(message, info, admin_id):
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        if not info["matches"]:
-            await message.answer("Hozircha natijalar yo'q.")
-            return
-        info["stats"]["views"] += 1
-        save_data()
-        text = "⚽ <b>So'nggi natijalar:</b>\n\n" + "\n".join(
-            f"{m['date']}: {m['match']} — {m['score']}" for m in info["matches"][-10:]
-        )
-        await message.answer(text)
-
-
-# ---------- Avtomobil e'lonlari bot ----------
-def setup_cars_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("ads_posted", 0)
-    info.setdefault("car_ads", {})
-    info.setdefault("pending_ads", {})
-    info.setdefault("next_ad_id", 1)
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_global_buttons_handler(dp, lambda m, s: carstart(m))
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="🚗 E'lonlar"), KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-        ], resize_keyboard=True)
-
-    def user_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="🚗 E'lonlar"), KeyboardButton(text="➕ E'lon joylashtirish")],
-        ], resize_keyboard=True)
-
-    @dp.message(Command("start"))
-    async def carstart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("🚗 <b>Avtomobil e'lonlari bot boshqaruvi</b>", reply_markup=admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer("🚗 Avtomobil e'lonlari botiga xush kelibsiz!", reply_markup=user_kb())
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def cars_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n"
-            f"🚗 Chop etilgan e'lonlar: {info['stats']['ads_posted']}\n⏳ Kutilayotgan: {len(info['pending_ads'])}"
-        )
-
-    @dp.message(F.text == "➕ E'lon joylashtirish")
-    async def add_ad_start(message: Message, state: FSMContext):
-        if not await check_active(message, info, admin_id):
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer("Avtomobil markasi va modelini yozing (masalan: Chevrolet Cobalt):")
-        await state.set_state(CarAdFlow.waiting_brand)
-
-    @dp.message(CarAdFlow.waiting_brand)
-    async def ad_brand(message: Message, state: FSMContext):
-        await state.update_data(brand=message.text.strip())
-        await message.answer("Ishlab chiqarilgan yilini yozing:")
-        await state.set_state(CarAdFlow.waiting_year)
-
-    @dp.message(CarAdFlow.waiting_year)
-    async def ad_year(message: Message, state: FSMContext):
-        await state.update_data(year=message.text.strip())
-        await message.answer("Narxini yozing (so'mda):")
-        await state.set_state(CarAdFlow.waiting_price)
-
-    @dp.message(CarAdFlow.waiting_price)
-    async def ad_price(message: Message, state: FSMContext):
-        await state.update_data(price=message.text.strip())
-        await message.answer("Telefon raqamingizni yozing:")
-        await state.set_state(CarAdFlow.waiting_phone)
-
-    @dp.message(CarAdFlow.waiting_phone)
-    async def ad_phone(message: Message, state: FSMContext):
-        state_data = await state.get_data()
-        ad_id = str(info["next_ad_id"])
-        info["next_ad_id"] += 1
-        username = message.from_user.username or message.from_user.id
-        ad = {
-            "brand": state_data["brand"],
-            "year": state_data["year"],
-            "price": state_data["price"],
-            "phone": message.text.strip(),
-            "user_id": message.from_user.id,
-            "username": username,
-        }
-        info["pending_ads"][ad_id] = ad
-        save_data()
-        text = (
-            f"🚗 <b>Yangi e'lon (tasdiqlash kutilmoqda)</b>\n"
-            f"{ad['brand']}, {ad['year']}-yil\n💰 {ad['price']} so'm\n📞 {ad['phone']}\n👤 @{username}"
-        )
-        buttons = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"adok_{ad_id}"),
-            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adno_{ad_id}"),
-        ]])
-        await message.bot.send_message(admin_id, text, reply_markup=buttons)
-        await message.answer("✅ E'loningiz yuborildi, admin tasdiqlagach e'lonlar ro'yxatida chiqadi.")
-        await state.clear()
-
-    @dp.callback_query(F.data.startswith("adok_"))
-    async def approve_ad(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        ad_id = callback.data.split("_", 1)[1]
-        ad = info["pending_ads"].pop(ad_id, None)
-        if ad:
-            info["car_ads"][ad_id] = ad
-            info["stats"]["ads_posted"] += 1
-            save_data()
-            try:
-                await callback.bot.send_message(ad["user_id"], "✅ E'loningiz tasdiqlandi va chop etildi!")
-            except Exception:
-                pass
-            await callback.message.answer("✅ Tasdiqlandi.")
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("adno_"))
-    async def reject_ad(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        ad_id = callback.data.split("_", 1)[1]
-        ad = info["pending_ads"].pop(ad_id, None)
-        save_data()
-        if ad:
-            try:
-                await callback.bot.send_message(ad["user_id"], "❌ E'loningiz rad etildi.")
-            except Exception:
-                pass
-        await callback.message.answer("❌ Rad etildi.")
-        await callback.answer()
-
-    @dp.message(F.text == "🚗 E'lonlar")
-    async def list_ads(message: Message):
-        if not info["car_ads"]:
-            await message.answer("Hozircha e'lonlar yo'q.")
-            return
-        for ad_id, ad in list(info["car_ads"].items())[-10:]:
-            text = f"🚗 {ad['brand']}, {ad['year']}-yil\n💰 {ad['price']} so'm\n📞 {ad['phone']}"
-            await message.answer(text)
-
 
 SETUP_FUNCTIONS = {
     "kino": setup_kino_bot,
@@ -3122,13 +2310,7 @@ SETUP_FUNCTIONS = {
     "translate": setup_translate_bot,
     "contact": setup_contact_bot,
     "survey": setup_survey_bot,
-    "taxi": setup_taxi_bot,
-    "test": setup_test_bot,
-    "fitness": setup_fitness_bot,
-    "prayer": setup_prayer_bot,
     "weather": setup_weather_bot,
-    "football": setup_football_bot,
-    "cars": setup_cars_bot,
 }
 
 
@@ -3211,6 +2393,8 @@ async def main():
     for token, info in data["bots"].items():
         info.setdefault("stats", {})
         await start_child_bot(token, info["type"])
+    for clone in data.get("platform_clones", []):
+        await start_platform_clone(clone["token"], clone.get("username"))
     asyncio.create_task(trial_warning_loop())
     await main_dp.start_polling(main_bot)
 
