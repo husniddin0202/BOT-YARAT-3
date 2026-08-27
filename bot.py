@@ -129,6 +129,10 @@ data.setdefault("monthly_rate", DEFAULT_MONTHLY_RATE)
 for _key, _val in DEFAULT_PRICES.items():
     data["prices"].setdefault(_key, _val)
 
+# Platformaning Hisob to'ldirish (balans) tizimi
+data.setdefault("user_balances", {})     # {str(uid): so'm}
+data.setdefault("payment_systems", {})   # {psid: {"name","number","owner"}} — Hisob to'ldirish uchun
+
 # RAVSHAN BUILDER BOTning to'liq nusxalari (klonlari) shu yerda ro'yxatga olinadi.
 # Har biri: {"token": "...", "username": "...", "created_at": "..."}
 data.setdefault("platform_clones", [])
@@ -267,6 +271,20 @@ class TaxiOrder(StatesGroup):
     waiting_from = State()
     waiting_to = State()
     waiting_phone = State()
+
+
+class TopUpFlow(StatesGroup):
+    waiting_amount = State()
+    waiting_check = State()
+
+
+class AdminAddBalance(StatesGroup):
+    waiting_user_id = State()
+    waiting_amount = State()
+
+
+MIN_TOPUP = 10_000
+MAX_TOPUP = 150_000
 
 
 class CurrencyAdd(StatesGroup):
@@ -690,23 +708,346 @@ def setup_platform_bot(dp: Dispatcher):
     async def myid_handler(message: Message):
         await message.answer(f"Sizning Telegram ID'ingiz: <code>{message.from_user.id}</code>")
 
+    def main_menu_kb(uid: int):
+        keyboard = [
+            [KeyboardButton(text="🤖 Bot yaratish"), KeyboardButton(text="📁 Botlarim")],
+            [KeyboardButton(text="👤 Shaxsiy kabinet"), KeyboardButton(text="💰 Hisob to'ldirish")],
+            [KeyboardButton(text="🎁 Referal"), KeyboardButton(text="🌐 Saytga kirish")],
+            [KeyboardButton(text="📩 Murojaat"), KeyboardButton(text="📖 Qo'llanma")],
+        ]
+        if uid == ADMIN_ID:
+            keyboard.append([KeyboardButton(text="📊 Statistika"), KeyboardButton(text="➕ Hisob qo'shish")])
+            keyboard.append([KeyboardButton(text="💳 To'lov tizimlar")])
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
     @dp.message(Command("start"))
     async def main_start(message: Message):
         price_lines = "\n".join(f"{BOT_TYPES[key]} — {get_price(key):,} so'm" for key in BOT_TYPES)
         text = (
-            "🤖 <b>Bot yaratuvchi platformaga xush kelibsiz!</b>\n\n"
-            "Bu yerda bir necha daqiqada o'zingizga kerakli botni yaratishingiz mumkin.\n\n"
+            "🤖 <b>Bot Creator</b> — Telegram botlar yaratish uchun qulay platforma\n\n"
+            "Bu platforma orqali siz hech qanday kod yozmasdan o'z Telegram botlaringizni "
+            "tez va oson yaratishingiz, ularni tahrirlashingiz hamda boshqarishingiz mumkin.\n\n"
+            "⚡ <b>Nega aynan Bot Creator?</b>\n"
+            "• Botlar muntazam yangilanib boriladi\n"
+            "• Barqaror va mukammal ishlaydigan tizim\n"
+            "• To'liq o'zbek tilidagi qulay interfeys\n"
+            "• Doimiy va tezkor qo'llab-quvvatlash xizmati\n"
+            "• Barcha jarayonlar avtomatik va tushunarli\n\n"
             "💳 <b>Boshlang'ich narxlar:</b>\n"
             f"{price_lines}\n\n"
             f"📅 Keyingi oylardan boshlab — narxning atigi {int(get_monthly_rate()*100)}%.\n"
             f"🎁 Har bir bot uchun {TRIAL_DAYS} kunlik BEPUL sinov muddati bor!\n\n"
-            "💳 To'lov usuli: administrator bilan bog'lanish\n\n"
-            "Bot yaratish: /newbot\n"
-            "Botlaringiz: /mybots"
+            "Pastdagi menyudan foydalaning 👇"
         )
-        await message.answer(text, reply_markup=contact_admin_kb())
+        await message.answer(text, reply_markup=main_menu_kb(message.from_user.id))
+
+    @dp.message(F.text == "📖 Qo'llanma")
+    async def guide_handler(message: Message):
+        await message.answer(
+            "📖 <b>Qo'llanma</b>\n\n"
+            "1️⃣ \"🤖 Bot yaratish\" tugmasini bosing\n"
+            "2️⃣ @BotFather orqali yangi bot yarating va tokenini shu yerga yuboring\n"
+            "3️⃣ Bot turini tanlang (Kino, Savdo, Taksi va h.k.)\n"
+            f"4️⃣ {TRIAL_DAYS} kunlik bepul sinovdan foydalaning\n"
+            "5️⃣ Sinov tugagach, \"💰 Hisob to'ldirish\" orqali balansingizni to'ldirib, botingizni faollashtiring\n\n"
+            "❓ Savollaringiz bo'lsa — \"📩 Murojaat\" tugmasini bosing."
+        )
+
+    @dp.message(F.text == "📩 Murojaat")
+    async def murojaat_handler(message: Message):
+        await message.answer("Administrator bilan bog'lanish uchun quyidagi tugmani bosing 👇", reply_markup=contact_admin_kb())
+
+    @dp.message(F.text == "🌐 Saytga kirish")
+    async def website_handler(message: Message):
+        await message.answer("🌐 Bu funksiya hozircha ishlab chiqilmoqda. Tez orada qo'shiladi!")
+
+    @dp.message(F.text == "🎁 Referal")
+    async def referral_handler(message: Message):
+        await message.answer(
+            "🎁 <b>Referal tizimi</b>\n\n"
+            "Bu funksiya hozircha ishlab chiqilmoqda. Tez orada do'stlaringizni taklif qilib, "
+            "bonuslar olish imkoniyati qo'shiladi!"
+        )
+
+    @dp.message(F.text == "👤 Shaxsiy kabinet")
+    async def cabinet_handler(message: Message):
+        uid = message.from_user.id
+        balance = data["user_balances"].get(str(uid), 0)
+        bot_count = sum(1 for i in data["bots"].values() if uid in i.get("admin_ids", [i["admin_id"]]))
+        await message.answer(
+            "👤 <b>Shaxsiy kabinet</b>\n\n"
+            f"🆔 ID: <code>{uid}</code>\n"
+            f"💰 Balans: {balance:,} so'm\n"
+            f"🤖 Botlaringiz soni: {bot_count}"
+        )
+
+    # ---------- Hisob to'ldirish (balans) ----------
+    def platform_payment_systems_kb():
+        buttons = [[InlineKeyboardButton(text="➕ To'lov tizimi qo'shish", callback_data="pps_add")]]
+        if data["payment_systems"]:
+            buttons.append([InlineKeyboardButton(text="📋 Ro'yxat", callback_data="pps_list")])
+            buttons.append([InlineKeyboardButton(text="➖ O'chirish", callback_data="pps_del")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    @dp.message(F.text == "💳 To'lov tizimlar")
+    async def platform_payment_systems_panel(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        if not data["payment_systems"]:
+            await message.answer("⚠️ To'lov tizimlari mavjud emas.", reply_markup=platform_payment_systems_kb())
+        else:
+            await message.answer("💳 To'lov tizimlari boshqaruvi:", reply_markup=platform_payment_systems_kb())
+
+    @dp.callback_query(F.data == "pps_add")
+    async def pps_add_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        await callback.message.answer("Iltimos, to'lov tizimi nomini kiriting:\n\n(Masalan: Click, Payme, Humo, Uzcard...)")
+        await state.set_state(PaymentSystemAdd.waiting_name)
+        await callback.answer()
+
+    @dp.message(PaymentSystemAdd.waiting_name)
+    async def pps_name_process(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.update_data(ps_name=message.text.strip())
+        await message.answer("Iltimos, to'lov tizimi raqamini kiriting:\n\n(Masalan: karta yoki hisob raqami)")
+        await state.set_state(PaymentSystemAdd.waiting_number)
+
+    @dp.message(PaymentSystemAdd.waiting_number)
+    async def pps_number_process(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.update_data(ps_number=message.text.strip())
+        await message.answer("Hisob raqami egasining to'liq ismini kiriting:\n\n(Masalan: Ism Familiya)")
+        await state.set_state(PaymentSystemAdd.waiting_owner)
+
+    @dp.message(PaymentSystemAdd.waiting_owner)
+    async def pps_owner_process(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        fsm_data = await state.get_data()
+        psid = uuid.uuid4().hex[:8]
+        data["payment_systems"][psid] = {
+            "name": fsm_data.get("ps_name", "-"),
+            "number": fsm_data.get("ps_number", "-"),
+            "owner": message.text.strip(),
+        }
+        save_data()
+        await message.answer("✅ To'lov tizimi qo'shildi!")
+        await state.clear()
+
+    @dp.callback_query(F.data == "pps_list")
+    async def pps_list_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        if not data["payment_systems"]:
+            await callback.message.answer("To'lov tizimlari mavjud emas.")
+        else:
+            lines = [f"• {p['name']} — {p['number']} ({p['owner']})" for p in data["payment_systems"].values()]
+            await callback.message.answer("💳 To'lov tizimlari:\n\n" + "\n".join(lines))
+        await callback.answer()
+
+    @dp.callback_query(F.data == "pps_del")
+    async def pps_del_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        if not data["payment_systems"]:
+            await callback.message.answer("O'chirish uchun to'lov tizimi yo'q.")
+            await callback.answer()
+            return
+        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"ppsdel_{pid}")] for pid, p in data["payment_systems"].items()]
+        await callback.message.answer("O'chirmoqchi bo'lgan to'lov tizimini tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("ppsdel_"))
+    async def pps_delid_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        pid = callback.data.split("_", 1)[1]
+        removed = data["payment_systems"].pop(pid, None)
+        save_data()
+        if removed:
+            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
+        await callback.answer()
+
+    @dp.message(F.text == "💰 Hisob to'ldirish")
+    async def topup_start(message: Message, state: FSMContext):
+        await message.answer(
+            f"💰 Hisobni to'ldirish uchun summani kiriting.\n\n"
+            f"Minimal: {MIN_TOPUP:,} so'm\n"
+            f"Maksimal: {MAX_TOPUP:,} so'm"
+        )
+        await state.set_state(TopUpFlow.waiting_amount)
+
+    @dp.message(TopUpFlow.waiting_amount)
+    async def topup_amount_process(message: Message, state: FSMContext):
+        try:
+            amount = int(message.text.strip().replace(" ", ""))
+        except ValueError:
+            await message.answer("❌ Faqat raqam kiriting.")
+            return
+        if amount < MIN_TOPUP or amount > MAX_TOPUP:
+            await message.answer(f"❌ Summa {MIN_TOPUP:,} so'mdan {MAX_TOPUP:,} so'mgacha bo'lishi kerak.")
+            return
+        if not data["payment_systems"]:
+            await message.answer("Hozircha to'lov tizimlari mavjud emas. Administratorga murojaat qiling.")
+            await state.clear()
+            return
+        await state.update_data(topup_amount=amount)
+        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"topuppay_{pid}")] for pid, p in data["payment_systems"].items()]
+        await message.answer(
+            f"💰 Summa: {amount:,} so'm\n\n💳 To'lov tizimini tanlang:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+
+    @dp.callback_query(F.data.startswith("topuppay_"))
+    async def topup_payment_chosen_cb(callback: CallbackQuery, state: FSMContext):
+        pid = callback.data.split("_", 1)[1]
+        psys = data["payment_systems"].get(pid)
+        if not psys:
+            await callback.answer("❌ Ma'lumot topilmadi, qaytadan urinib ko'ring.", show_alert=True)
+            return
+        fsm_data = await state.get_data()
+        amount = fsm_data.get("topup_amount", 0)
+        await state.set_state(TopUpFlow.waiting_check)
+        text = (
+            f"💳 <b>{psys['name']}</b>\n\n"
+            f"🔢 Raqami: <code>{psys['number']}</code>\n"
+            f"👤 Egasi: {psys['owner']}\n\n"
+            f"💰 To'lov summasi: {amount:,} so'm\n\n"
+            "To'lovni amalga oshirgach, to'lov chekini (skrinshot) shu yerga yuboring."
+        )
+        await callback.message.answer(text)
+        await callback.answer()
+
+    @dp.message(TopUpFlow.waiting_check, F.photo)
+    async def topup_check_received(message: Message, state: FSMContext):
+        fsm_data = await state.get_data()
+        amount = fsm_data.get("topup_amount", 0)
+        uid = message.from_user.id
+        uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        caption = (
+            "🧾 <b>Yangi Hisob to'ldirish so'rovi</b>\n\n"
+            f"💰 Summa: {amount:,} so'm\n"
+            f"👤 Foydalanuvchi: {uname} (ID: <code>{uid}</code>)"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"topupapprove_{uid}_{amount}"),
+            InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"topupreject_{uid}"),
+        ]])
+        try:
+            await message.bot.send_photo(chat_id=ADMIN_ID, photo=message.photo[-1].file_id, caption=caption, reply_markup=kb)
+        except Exception as e:
+            logging.error(f"Adminga chek yuborishda xato: {e}")
+        await message.answer(
+            "✅ Chekingiz qabul qilindi!\n\n"
+            "Administrator tomonidan tez orada ko'rib chiqiladi. Tasdiqlansa, balansingizga mablag' qo'shiladi."
+        )
+        await state.clear()
+
+    @dp.callback_query(F.data.startswith("topupapprove_"))
+    async def topup_approve_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        _, target_uid, amount = callback.data.split("_", 2)
+        amount = int(amount)
+        key = str(target_uid)
+        data["user_balances"][key] = data["user_balances"].get(key, 0) + amount
+        save_data()
+        try:
+            await callback.bot.send_message(
+                chat_id=int(target_uid),
+                text=(
+                    "✅ <b>Chekingiz qabul qilindi!</b>\n\n"
+                    f"Hisobingizga {amount:,} so'm qo'shildi.\n"
+                    f"💰 Joriy balans: {data['user_balances'][key]:,} so'm"
+                ),
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ <b>TASDIQLANDI</b>")
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("topupreject_"))
+    async def topup_reject_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        target_uid = int(callback.data.split("_", 1)[1])
+        try:
+            await callback.bot.send_message(
+                chat_id=target_uid,
+                text="❌ <b>To'lovingiz administrator tomonidan bekor qilindi.</b>\n\nAgar savollaringiz bo'lsa, murojaat qiling.",
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ <b>BEKOR QILINDI</b>")
+        await callback.answer()
+
+    # ---------- Admin: Statistika va Hisob qo'shish ----------
+    @dp.message(F.text == "📊 Statistika")
+    async def platform_stats(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        total_bots = len(data["bots"])
+        active_bots = sum(1 for i in data["bots"].values() if is_active(i))
+        total_balance = sum(data["user_balances"].values())
+        await message.answer(
+            "📊 <b>Platforma statistikasi</b>\n\n"
+            f"🤖 Jami botlar: {total_bots}\n"
+            f"🟢 Faol botlar: {active_bots}\n"
+            f"👥 Balansi bor foydalanuvchilar: {len(data['user_balances'])}\n"
+            f"💰 Tizimdagi jami balans: {total_balance:,} so'm"
+        )
+
+    @dp.message(F.text == "➕ Hisob qo'shish")
+    async def admin_add_balance_start(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await message.answer("Foydalanuvchi ID raqamini kiriting:")
+        await state.set_state(AdminAddBalance.waiting_user_id)
+
+    @dp.message(AdminAddBalance.waiting_user_id)
+    async def admin_add_balance_uid(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        try:
+            target_uid = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Faqat raqamli ID kiriting.")
+            return
+        await state.update_data(target_uid=target_uid)
+        await message.answer("Qo'shiladigan summani kiriting (so'mda):")
+        await state.set_state(AdminAddBalance.waiting_amount)
+
+    @dp.message(AdminAddBalance.waiting_amount)
+    async def admin_add_balance_amount(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        try:
+            amount = int(message.text.strip().replace(" ", ""))
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        fsm_data = await state.get_data()
+        target_uid = fsm_data.get("target_uid")
+        key = str(target_uid)
+        data["user_balances"][key] = data["user_balances"].get(key, 0) + amount
+        save_data()
+        await message.answer(f"✅ {target_uid} ID'li foydalanuvchiga {amount:,} so'm qo'shildi.\n💰 Yangi balans: {data['user_balances'][key]:,} so'm")
+        try:
+            await message.bot.send_message(
+                chat_id=target_uid,
+                text=f"✅ Hisobingizga administrator tomonidan {amount:,} so'm qo'shildi.\n💰 Joriy balans: {data['user_balances'][key]:,} so'm",
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+        await state.clear()
 
     @dp.message(Command("newbot"))
+    @dp.message(F.text == "🤖 Bot yaratish")
     async def newbot_start(message: Message, state: FSMContext):
         await message.answer(
             "Yangi bot tokenini yuboring.\n"
@@ -910,6 +1251,7 @@ def setup_platform_bot(dp: Dispatcher):
         await callback.answer()
 
     @dp.message(Command("mybots"))
+    @dp.message(F.text == "📁 Botlarim")
     async def mybots(message: Message):
         uid = message.from_user.id
         if uid == ADMIN_ID:
