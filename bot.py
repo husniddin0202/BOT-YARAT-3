@@ -66,9 +66,12 @@ DEFAULT_PRICES = {
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
 DEFAULT_TARIFFS = {
-    "1": {"name": "Boshlang'ich", "price": 10_000, "daily_limit": 1_000},
-    "2": {"name": "Standart", "price": 50_000, "daily_limit": 10_000},
-    "3": {"name": "Cheksiz", "price": 100_000, "daily_limit": None},
+    "1": {"name": "🚀 Start", "price": 9_000, "daily_limit": 300, "speed": "~0.5s"},
+    "2": {"name": "⭐ Standard", "price": 18_000, "daily_limit": 1_000, "speed": "~0.4s"},
+    "3": {"name": "💎 Pro 🔥", "price": 35_000, "daily_limit": 3_000, "speed": "~0.3s"},
+    "4": {"name": "⚡ Turbo", "price": 65_000, "daily_limit": 7_500, "speed": "~0.2s"},
+    "5": {"name": "🔥 Ultra", "price": 90_000, "daily_limit": 15_000, "speed": "~0.1s"},
+    "6": {"name": "♾ Unlimited", "price": 150_000, "daily_limit": None, "speed": "~0s"},
 }
 
 running_bots = {}
@@ -172,6 +175,98 @@ def tariff_limit_text(t: dict) -> str:
         return "cheksiz foydalanuvchi"
     return f"kuniga {t['daily_limit']:,} tagacha foydalanuvchi"
 
+
+def tariff_card_text(tid: str, t: dict) -> str:
+    daily_price = t["price"] // 30
+    if t.get("daily_limit") is None:
+        users_line = "♾ Cheksiz foydalanuvchi kuniga"
+    else:
+        users_line = f"👥 {t['daily_limit']:,} ta foydalanuvchi kuniga"
+    return (
+        f"<b>{t['name']}</b>\n"
+        f"┣ 💵 Narxi: {t['price']:,} so'm/oy ({daily_price:,} so'm/kun)\n"
+        f"┣ {users_line}\n"
+        f"┗ ⚡ Javob tezligi: {t.get('speed', '-')}"
+    )
+
+
+# Har bir bot turi uchun tavsif (bot yaratish oynasida ko'rsatiladi)
+BOT_DESCRIPTIONS = {
+    "kino": (
+        "<i>Ushbu tizim orqali siz kinolarni botga yuklaysiz va ularga maxsus kod "
+        "biriktirasiz. Foydalanuvchilar shu kod orqali kinoni tez va oson yuklab "
+        "olishlari mumkin.</i>\n\n"
+        "📊 Bot ichida foydalanuvchilar statistikasi, yuklanishlar va faollikni kuzatish "
+        "imkoniyati mavjud.\n\n"
+        "🔒 Tizim majburiy obuna (Telegram/Instagram/TikTok/YouTube/boshqa havola), "
+        "to'lov tizimlari va Premium obuna orqali yopiq kontent berish imkoniyatlarini ham "
+        "taqdim etadi.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "shop": (
+        "<i>Ushbu bot orqali siz mahsulotlaringizni ro'yxatga olib, mijozlaringizga "
+        "onlayn savdo qilishingiz mumkin.</i>\n\n"
+        "🛍 Mijozlar mahsulotlarni ko'rib, savatchaga qo'shib, buyurtma berishlari mumkin.\n\n"
+        "📊 Buyurtmalar va statistikani kuzatib borish, majburiy obuna qo'shish imkoniyati bor.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "ai": (
+        "<i>Foydalanuvchilar bilan sun'iy intellekt orqali suhbatlashadigan bot. "
+        "Har qanday savolga tezkor va aqlli javob beradi.</i>\n\n"
+        "🤖 Cheksiz mavzularda savol-javob, matnli yordam va maslahatlar.\n\n"
+        "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "post": (
+        "<i>Obunachilaringizga tezkor e'lon va xabarlar yuborish uchun mo'ljallangan bot.</i>\n\n"
+        "📢 Barcha foydalanuvchilarga bir zumda ommaviy xabar yuborish imkoniyati.\n\n"
+        "📊 Yuborilgan xabarlar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "money": (
+        "<i>Joriy valyuta kurslarini ko'rsatadigan bot.</i>\n\n"
+        "💱 Dollar, Yevro va boshqa valyutalarning kursini bir zumda ko'rsatadi.\n\n"
+        "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "translate": (
+        "<i>Matnlarni turli tillarga tarjima qiladigan bot.</i>\n\n"
+        "🌐 Foydalanuvchi matn yuboradi — bot kerakli tilga tezkor tarjima qiladi.\n\n"
+        "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "contact": (
+        "<i>Mijozlar bilan to'g'ridan-to'g'ri aloqa o'rnatish uchun mo'ljallangan bot.</i>\n\n"
+        "📞 Foydalanuvchi xabari to'g'ridan-to'g'ri sizga (adminga) forward qilinadi.\n\n"
+        "📊 Xabarlar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "survey": (
+        "<i>Foydalanuvchilardan so'rovnoma orqali ma'lumot yig'ish uchun bot.</i>\n\n"
+        "📝 Savollar ketma-ketligini o'zingiz sozlaysiz, javoblar saqlanib boriladi.\n\n"
+        "📊 Natijalar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "weather": (
+        "<i>Istalgan shahar bo'yicha joriy ob-havo ma'lumotini beradigan bot.</i>\n\n"
+        "🌤 Foydalanuvchi shahar nomini yuboradi — harorat, namlik va shamol tezligi chiqadi.\n\n"
+        "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "nakrutka": (
+        "<i>Telegram, Instagram, TikTok va YouTube kabi tarmoqlar uchun obunachi, like va "
+        "ko'rishlar xizmatini sotadigan bot.</i>\n\n"
+        "🚀 Xizmatlar ro'yxati va narxlarini o'zingiz belgilaysiz.\n\n"
+        "💳 Mijoz buyurtma berib, chek yuboradi — siz tasdiqlaysiz.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "taxi": (
+        "<i>Mijozlar manzil va telefon raqamini yuborib, taksi chaqiradigan bot.</i>\n\n"
+        "🚕 Buyurtma to'g'ridan-to'g'ri sizga (yoki haydovchilaringizga) yuboriladi.\n\n"
+        "📊 Buyurtmalar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+}
 
 def is_active(info: dict) -> bool:
     paid_until = info.get("paid_until")
@@ -1114,14 +1209,70 @@ def setup_platform_bot(dp: Dispatcher):
             logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
         await state.clear()
 
+    def type_detail_text(bot_type: str) -> str:
+        desc = BOT_DESCRIPTIONS.get(bot_type, "")
+        return (
+            f"{BOT_TYPES[bot_type]}\n\n"
+            f"{desc}\n\n"
+            f"💵 Yaratish narxi: 0 so'm\n"
+            f"💰 Oylik to'lov: tarifga qarab belgilanadi\n"
+            f"🎁 Bepul sinov muddati: {TRIAL_DAYS} kun"
+        )
+
+    def type_detail_kb(bot_type: str):
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Tariflar ro'yxati", callback_data=f"tariffpreview_{bot_type}")],
+            [InlineKeyboardButton(text="✅ Bot yaratish — Bepul", callback_data=f"createbot_{bot_type}")],
+            [InlineKeyboardButton(text="◀️ Orqaga", callback_data="backtotypes")],
+        ])
+
+    def tariff_preview_text(bot_type: str) -> str:
+        cards = "\n\n".join(tariff_card_text(tid, t) for tid, t in data["tariffs"].items())
+        return f"{BOT_TYPES[bot_type]} — Tariflar\n\n{cards}"
+
+    def tariff_preview_kb(bot_type: str):
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Orqaga", callback_data=f"backtotype_{bot_type}")]])
+
     @dp.message(Command("newbot"))
     @dp.message(F.text == "🤖 Bot yaratish")
     async def newbot_start(message: Message, state: FSMContext):
-        await message.answer(
+        await state.clear()
+        await message.answer("🤖 Quyidagi bot turlaridan birini tanlang:", reply_markup=types_kb())
+
+    @dp.callback_query(F.data == "backtotypes")
+    async def back_to_types_cb(callback: CallbackQuery):
+        await callback.message.edit_text("🤖 Quyidagi bot turlaridan birini tanlang:", reply_markup=types_kb())
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("type_"))
+    async def newbot_type(callback: CallbackQuery):
+        bot_type = callback.data.split("_", 1)[1]
+        await callback.message.edit_text(type_detail_text(bot_type), reply_markup=type_detail_kb(bot_type))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("backtotype_"))
+    async def back_to_type_cb(callback: CallbackQuery):
+        bot_type = callback.data.split("_", 1)[1]
+        await callback.message.edit_text(type_detail_text(bot_type), reply_markup=type_detail_kb(bot_type))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("tariffpreview_"))
+    async def tariff_preview_cb(callback: CallbackQuery):
+        bot_type = callback.data.split("_", 1)[1]
+        await callback.message.edit_text(tariff_preview_text(bot_type), reply_markup=tariff_preview_kb(bot_type))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("createbot_"))
+    async def createbot_cb(callback: CallbackQuery, state: FSMContext):
+        bot_type = callback.data.split("_", 1)[1]
+        await state.update_data(bot_type=bot_type)
+        await state.set_state(NewBotFlow.waiting_token)
+        await callback.message.edit_text(
+            f"{BOT_TYPES[bot_type]}\n\n"
             "Yangi bot tokenini yuboring.\n"
             "(@BotFather orqali /newbot bilan yaratib, tokenni shu yerga joylashtiring)"
         )
-        await state.set_state(NewBotFlow.waiting_token)
+        await callback.answer()
 
     @dp.message(NewBotFlow.waiting_token)
     async def newbot_token(message: Message, state: FSMContext):
@@ -1134,26 +1285,19 @@ def setup_platform_bot(dp: Dispatcher):
             await message.answer("❌ Token noto'g'ri. Qaytadan yuboring.")
             return
 
-        await state.update_data(token=token, bot_name=me.first_name)
-        await message.answer(f"✅ Bot topildi: <b>{me.first_name}</b>\n\nEndi bot turini tanlang:", reply_markup=types_kb())
-
-    @dp.callback_query(F.data.startswith("type_"))
-    async def newbot_type(callback: CallbackQuery, state: FSMContext):
-        bot_type = callback.data.split("_", 1)[1]
         state_data = await state.get_data()
-        token = state_data.get("token")
-
-        if not token:
-            await callback.answer("Xatolik: qaytadan /newbot bosing.", show_alert=True)
+        bot_type = state_data.get("bot_type")
+        if not bot_type:
+            await message.answer("Xatolik: qaytadan \"🤖 Bot yaratish\" bosing.")
+            await state.clear()
             return
 
-        await state.update_data(bot_type=bot_type)
-        await callback.message.edit_text(
-            f"{BOT_TYPES[bot_type]} uchun tarifni tanlang:",
+        await state.update_data(token=token, bot_name=me.first_name)
+        await state.set_state(NewBotFlow.waiting_tariff)
+        await message.answer(
+            f"✅ Bot topildi: <b>{me.first_name}</b>\n\n{BOT_TYPES[bot_type]} uchun tarifni tanlang:",
             reply_markup=tariff_kb(),
         )
-        await state.set_state(NewBotFlow.waiting_tariff)
-        await callback.answer()
 
     @dp.callback_query(NewBotFlow.waiting_tariff, F.data.startswith("tariff_"))
     async def newbot_tariff(callback: CallbackQuery, state: FSMContext):
@@ -1164,7 +1308,7 @@ def setup_platform_bot(dp: Dispatcher):
         bot_type = state_data.get("bot_type")
 
         if not token or not bot_type:
-            await callback.answer("Xatolik: qaytadan /newbot bosing.", show_alert=True)
+            await callback.answer("Xatolik: qaytadan \"🤖 Bot yaratish\" bosing.", show_alert=True)
             return
 
         bot_id = data["next_bot_id"]
@@ -3818,3 +3962,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
