@@ -601,7 +601,7 @@ def subscribe_kb(missing, channels: dict, show_premium: bool = False):
             emoji = SOCIAL_EMOJI.get(ctype, "🔗")
             buttons.append([InlineKeyboardButton(text=f"{emoji} {info['title']}", url=info["url"])])
     if show_premium:
-        buttons.append([InlineKeyboardButton(text="💎 Premium (kanallarsiz tomosha qiling)", callback_data="buy_premium")])
+        buttons.append([InlineKeyboardButton(text="💎 Premium (cheklovlarsiz foydalaning)", callback_data="buy_premium")])
     buttons.append([InlineKeyboardButton(text="✅ Obuna bo'ldim", callback_data="check_sub")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -616,17 +616,21 @@ def is_premium_active(info: dict, uid: int) -> bool:
         return False
 
 
-async def require_subscription(event, info: dict, admin_id: int, show_premium: bool = False) -> bool:
+async def require_subscription(event, info: dict, admin_id: int) -> bool:
     uid = event.from_user.id
     if is_admin(info, uid):
         return True
-    channels = info.get("channels", {})
-    if not channels:
+    if is_premium_active(info, uid):
         return True
-    missing = await get_missing_channels(event.bot, channels, uid)
-    if missing:
+    channels = info.get("channels", {})
+    show_premium = info.get("premium_enabled", False) and bool(info.get("premium_tariffs"))
+    missing = await get_missing_channels(event.bot, channels, uid) if channels else []
+    if missing or (show_premium and not channels):
         kb = subscribe_kb(missing, channels, show_premium=show_premium)
-        text = "Botdan foydalanish uchun quyidagi kanal(lar)ga obuna bo'ling:"
+        if missing:
+            text = "Botdan foydalanish uchun quyidagi kanal(lar)ga obuna bo'ling:"
+        else:
+            text = "💎 Botdan foydalanish uchun Premium sotib oling:"
         if isinstance(event, CallbackQuery):
             await event.message.answer(text, reply_markup=kb)
             await event.answer()
@@ -1495,14 +1499,95 @@ def setup_platform_bot(dp: Dispatcher):
             )
             if uid == ADMIN_ID and info["admin_id"] != ADMIN_ID:
                 text += f"\n👤 Egasi ID: {info['admin_id']}"
-            kb = None
+            buttons = []
             if uid == ADMIN_ID:
                 amount = next_payment_amount(info)
-                buttons = [[InlineKeyboardButton(text=f"✅ To'lovni tasdiqlash ({amount:,} so'm)", callback_data=f"activate_{info['id']}")]]
+                buttons.append([InlineKeyboardButton(text=f"✅ To'lovni tasdiqlash ({amount:,} so'm)", callback_data=f"activate_{info['id']}")])
                 if info.get("paid_until"):
                     buttons.append([InlineKeyboardButton(text="❌ Tasdiqdan chiqarish", callback_data=f"deactivate_{info['id']}")])
-                kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+            if uid in info.get("admin_ids", [info["admin_id"]]):
+                buttons.append([InlineKeyboardButton(text="🔄 Tarifni o'zgartirish", callback_data=f"changetariff_{info['id']}")])
+                buttons.append([InlineKeyboardButton(text="💰 Hozir to'lov qilish", callback_data=f"paynow_{info['id']}")])
+            kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
             await message.answer(text, reply_markup=kb)
+
+    def find_bot_by_id(bot_id: int):
+        for token, info in data["bots"].items():
+            if info.get("id") == bot_id:
+                return token, info
+        return None, None
+
+    @dp.callback_query(F.data.startswith("changetariff_"))
+    async def changetariff_cb(callback: CallbackQuery):
+        bot_id = int(callback.data.split("_", 1)[1])
+        token, target = find_bot_by_id(bot_id)
+        if not target or callback.from_user.id not in target.get("admin_ids", [target["admin_id"]]):
+            await callback.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        current_tariff = target.get("tariff", "2")
+        buttons = [
+            [InlineKeyboardButton(
+                text=("✅ " if tid == current_tariff else "") + f"{t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})",
+                callback_data=f"settariff_{bot_id}_{tid}",
+            )]
+            for tid, t in data["tariffs"].items()
+        ]
+        await callback.message.answer(
+            f"🔄 <b>{target['name']}</b> uchun yangi tarifni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("settariff_"))
+    async def settariff_cb(callback: CallbackQuery):
+        _, bot_id, tariff_id = callback.data.split("_", 2)
+        bot_id = int(bot_id)
+        token, target = find_bot_by_id(bot_id)
+        if not target or callback.from_user.id not in target.get("admin_ids", [target["admin_id"]]):
+            await callback.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        target["tariff"] = tariff_id
+        save_data()
+        tariff = get_tariff(tariff_id)
+        await callback.message.edit_text(
+            f"✅ Tarif o'zgartirildi: <b>{tariff['name']}</b> — {tariff['price']:,} so'm/oy ({tariff_limit_text(tariff)})\n\n"
+            "Kunlik limit darhol qo'llanadi. Keyingi to'lovda shu yangi narx hisoblanadi."
+        )
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("paynow_"))
+    async def paynow_cb(callback: CallbackQuery):
+        bot_id = int(callback.data.split("_", 1)[1])
+        token, target = find_bot_by_id(bot_id)
+        if not target or callback.from_user.id not in target.get("admin_ids", [target["admin_id"]]):
+            await callback.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        amount = next_payment_amount(target)
+        uid = callback.from_user.id
+        key = str(uid)
+        balance = data["user_balances"].get(key, 0)
+        if balance < amount:
+            await callback.answer(
+                f"❌ Balansingizda yetarli mablag' yo'q.\n\nKerak: {amount:,} so'm\nMavjud: {balance:,} so'm\n\n"
+                "\"💰 Hisob to'ldirish\" orqali to'ldiring.",
+                show_alert=True,
+            )
+            return
+        data["user_balances"][key] = balance - amount
+        base = datetime.now()
+        if target.get("paid_until"):
+            existing = datetime.fromisoformat(target["paid_until"])
+            if existing > base:
+                base = existing
+        target["paid_until"] = (base + timedelta(days=30)).isoformat()
+        save_data()
+        new_date = datetime.fromisoformat(target["paid_until"]).strftime("%d.%m.%Y")
+        await callback.message.edit_text(
+            f"✅ <b>To'lov muvaffaqiyatli amalga oshirildi!</b>\n\n"
+            f"💰 {amount:,} so'm balansdan yechildi.\n"
+            f"📅 Bot {new_date} gacha faol.\n"
+            f"💳 Qolgan balans: {data['user_balances'][key]:,} so'm"
+        )
+        await callback.answer()
 
     @dp.callback_query(F.data.startswith("activate_"))
     async def activate_cb(callback: CallbackQuery, state: FSMContext):
@@ -1606,16 +1691,379 @@ async def start_platform_clone(token: str, username: str = None):
 setup_platform_bot(main_dp)
 
 
+def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
+    """Barcha bot turlari uchun umumiy: to'lov tizimlari + Premium obuna tizimi.
+    Yoqilgan bo'lsa, botdan foydalanish uchun Premium sotib olish talab qilinishi mumkin.
+    Bir necha bot turida chaqiriladi, shuning uchun info shu yerda alohida olinadi."""
+    info = data["bots"][token]
+    info.setdefault("payment_systems", {})
+    info.setdefault("premium_tariffs", {})
+    info.setdefault("premium_users", {})
+    info.setdefault("premium_enabled", False)
+
+    # ---------- To'lov tizimlari (admin) ----------
+    def payment_systems_kb():
+        buttons = [[InlineKeyboardButton(text="➕ To'lov tizimi qo'shish", callback_data="ps_add")]]
+        if info["payment_systems"]:
+            buttons.append([InlineKeyboardButton(text="📋 Ro'yxat", callback_data="ps_list")])
+            buttons.append([InlineKeyboardButton(text="➖ O'chirish", callback_data="ps_del")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    @dp.message(F.text == "💳 To'lov tizimlar")
+    async def payment_systems_panel(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["payment_systems"]:
+            await message.answer("⚠️ To'lov tizimlari mavjud emas.", reply_markup=payment_systems_kb())
+        else:
+            await message.answer("💳 To'lov tizimlari boshqaruvi:", reply_markup=payment_systems_kb())
+
+    @dp.callback_query(F.data == "ps_add")
+    async def ps_add_cb(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            return
+        await callback.message.answer("Iltimos, to'lov tizimi nomini kiriting:\n\n(Masalan: Click, Payme, Humo, Uzcard...)")
+        await state.set_state(PaymentSystemAdd.waiting_name)
+        await callback.answer()
+
+    @dp.message(PaymentSystemAdd.waiting_name)
+    async def ps_name_process(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await state.update_data(ps_name=message.text.strip())
+        await message.answer("Iltimos, to'lov tizimi raqamini kiriting:\n\n(Masalan: karta yoki hisob raqami)")
+        await state.set_state(PaymentSystemAdd.waiting_number)
+
+    @dp.message(PaymentSystemAdd.waiting_number)
+    async def ps_number_process(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await state.update_data(ps_number=message.text.strip())
+        await message.answer("Hisob raqami egasining to'liq ismini kiriting:\n\n(Masalan: Ism Familiya)")
+        await state.set_state(PaymentSystemAdd.waiting_owner)
+
+    @dp.message(PaymentSystemAdd.waiting_owner)
+    async def ps_owner_process(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        fsm_data = await state.get_data()
+        psid = uuid.uuid4().hex[:8]
+        info["payment_systems"][psid] = {
+            "name": fsm_data.get("ps_name", "-"),
+            "number": fsm_data.get("ps_number", "-"),
+            "owner": message.text.strip(),
+        }
+        save_data()
+        await message.answer("✅ To'lov tizimi qo'shildi!")
+        await state.clear()
+
+    @dp.callback_query(F.data == "ps_list")
+    async def ps_list_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        if not info["payment_systems"]:
+            await callback.message.answer("To'lov tizimlari mavjud emas.")
+        else:
+            lines = [f"• {p['name']} — {p['number']} ({p['owner']})" for p in info["payment_systems"].values()]
+            await callback.message.answer("💳 To'lov tizimlari:\n\n" + "\n".join(lines))
+        await callback.answer()
+
+    @dp.callback_query(F.data == "ps_del")
+    async def ps_del_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        if not info["payment_systems"]:
+            await callback.message.answer("O'chirish uchun to'lov tizimi yo'q.")
+            await callback.answer()
+            return
+        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"psdel_{pid}")] for pid, p in info["payment_systems"].items()]
+        await callback.message.answer("O'chirmoqchi bo'lgan to'lov tizimini tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("psdel_"))
+    async def ps_delid_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        pid = callback.data.split("_", 1)[1]
+        removed = info["payment_systems"].pop(pid, None)
+        save_data()
+        if removed:
+            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
+        await callback.answer()
+
+    # ---------- Premium tariflar (admin) ----------
+    def premium_admin_kb():
+        toggle_text = "❌ Premium'ni o'chirish" if info["premium_enabled"] else "✅ Premium'ni yoqish"
+        buttons = [
+            [InlineKeyboardButton(text=toggle_text, callback_data="premium_toggle")],
+            [InlineKeyboardButton(text="➕ Tarif qo'shish", callback_data="pt_add")],
+        ]
+        if info["premium_tariffs"]:
+            buttons.append([InlineKeyboardButton(text="📋 Ro'yxat", callback_data="pt_list")])
+            buttons.append([InlineKeyboardButton(text="➖ O'chirish", callback_data="pt_del")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    @dp.message(F.text == "💎 Premium")
+    async def premium_admin_panel(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        status = "✅ Yoqilgan" if info["premium_enabled"] else "❌ O'chirilgan"
+        await message.answer(f"💎 Premium tariflar boshqaruvi\n\nHolati: {status}", reply_markup=premium_admin_kb())
+
+    @dp.callback_query(F.data == "premium_toggle")
+    async def premium_toggle_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        info["premium_enabled"] = not info["premium_enabled"]
+        save_data()
+        status = "✅ Yoqilgan" if info["premium_enabled"] else "❌ O'chirilgan"
+        await callback.message.edit_text(f"💎 Premium tariflar boshqaruvi\n\nHolati: {status}", reply_markup=premium_admin_kb())
+        await callback.answer("Saqlandi!")
+
+    @dp.callback_query(F.data == "pt_add")
+    async def pt_add_cb(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            return
+        await callback.message.answer("Tarif nomini kiriting:\n\n(Masalan: 1 kunlik obuna)")
+        await state.set_state(PremiumTariffAdd.waiting_name)
+        await callback.answer()
+
+    @dp.message(PremiumTariffAdd.waiting_name)
+    async def pt_name_process(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await state.update_data(pt_name=message.text.strip())
+        await message.answer("Necha kunlik? (faqat raqam, masalan: 1):")
+        await state.set_state(PremiumTariffAdd.waiting_days)
+
+    @dp.message(PremiumTariffAdd.waiting_days)
+    async def pt_days_process(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        try:
+            days = int(message.text.strip())
+            if days <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting (masalan: 1).")
+            return
+        await state.update_data(pt_days=days)
+        await message.answer("Narxini kiriting (so'mda, faqat raqam):")
+        await state.set_state(PremiumTariffAdd.waiting_price)
+
+    @dp.message(PremiumTariffAdd.waiting_price)
+    async def pt_price_process(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        try:
+            price = int(message.text.strip())
+            if price <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting (masalan: 5000).")
+            return
+        fsm_data = await state.get_data()
+        tid = uuid.uuid4().hex[:8]
+        info["premium_tariffs"][tid] = {
+            "name": fsm_data.get("pt_name", "-"),
+            "days": fsm_data.get("pt_days", 1),
+            "price": price,
+        }
+        save_data()
+        await message.answer("✅ Tarif qo'shildi!")
+        await state.clear()
+
+    @dp.callback_query(F.data == "pt_list")
+    async def pt_list_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        if not info["premium_tariffs"]:
+            await callback.message.answer("Tariflar mavjud emas.")
+        else:
+            lines = [f"• {t['name']} — {t['days']} kun — {t['price']:,} so'm" for t in info["premium_tariffs"].values()]
+            await callback.message.answer("💎 Premium tariflar:\n\n" + "\n".join(lines))
+        await callback.answer()
+
+    @dp.callback_query(F.data == "pt_del")
+    async def pt_del_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        if not info["premium_tariffs"]:
+            await callback.message.answer("O'chirish uchun tarif yo'q.")
+            await callback.answer()
+            return
+        buttons = [[InlineKeyboardButton(text=t["name"], callback_data=f"ptdel_{tid}")] for tid, t in info["premium_tariffs"].items()]
+        await callback.message.answer("O'chirmoqchi bo'lgan tarifni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("ptdel_"))
+    async def pt_delid_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        tid = callback.data.split("_", 1)[1]
+        removed = info["premium_tariffs"].pop(tid, None)
+        save_data()
+        if removed:
+            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
+        await callback.answer()
+
+    # ---------- Premium sotib olish (mijoz) ----------
+    @dp.callback_query(F.data == "buy_premium")
+    async def buy_premium_cb(callback: CallbackQuery):
+        if not info["premium_enabled"] or not info["premium_tariffs"]:
+            await callback.answer("Hozircha Premium tariflar mavjud emas.", show_alert=True)
+            return
+        buttons = [
+            [InlineKeyboardButton(text=f"{t['name']} - {t['price']:,} so'm", callback_data=f"premtariff_{tid}")]
+            for tid, t in info["premium_tariffs"].items()
+        ]
+        text = (
+            "💎 <b>Premium obuna</b>\n\n"
+            "Premium orqali quyidagilarga ega bo'lasiz:\n"
+            "• Kanallarga obuna bo'lmasdan botdan foydalanish\n"
+            "• Cheklovlarsiz, tezkor xizmat\n\n"
+            "📋 Quyidagi tariflardan birini tanlang:"
+        )
+        await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("premtariff_"))
+    async def premium_tariff_chosen_cb(callback: CallbackQuery):
+        tid = callback.data.split("_", 1)[1]
+        tariff = info["premium_tariffs"].get(tid)
+        if not tariff:
+            await callback.answer("❌ Bu tarif endi mavjud emas.", show_alert=True)
+            return
+        if not info["payment_systems"]:
+            await callback.answer("Hozircha to'lov tizimlari mavjud emas. Administratorga murojaat qiling.", show_alert=True)
+            return
+        buttons = [
+            [InlineKeyboardButton(text=p["name"], callback_data=f"prempay_{tid}_{pid}")]
+            for pid, p in info["payment_systems"].items()
+        ]
+        buttons.append([InlineKeyboardButton(text="◀️ Orqaga", callback_data="buy_premium")])
+        text = (
+            "💳 <b>To'lov tizimini tanlang</b>\n\n"
+            f"💎 Tarif: {tariff['name']}\n"
+            f"📆 Muddat: {tariff['days']} kun\n"
+            f"💰 Narx: {tariff['price']:,} so'm"
+        )
+        await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("prempay_"))
+    async def premium_payment_chosen_cb(callback: CallbackQuery, state: FSMContext):
+        _, tid, pid = callback.data.split("_", 2)
+        tariff = info["premium_tariffs"].get(tid)
+        psys = info["payment_systems"].get(pid)
+        if not tariff or not psys:
+            await callback.answer("❌ Ma'lumot topilmadi, qaytadan urinib ko'ring.", show_alert=True)
+            return
+        await state.update_data(prem_tariff_id=tid, prem_payment_id=pid)
+        await state.set_state(PremiumPurchase.waiting_check)
+        text = (
+            f"💳 <b>{psys['name']}</b>\n\n"
+            f"🔢 Raqami: <code>{psys['number']}</code>\n"
+            f"👤 Egasi: {psys['owner']}\n\n"
+            f"💰 To'lov summasi: {tariff['price']:,} so'm\n\n"
+            "To'lovni amalga oshirgach, to'lov chekini (skrinshot) shu yerga yuboring."
+        )
+        await callback.message.answer(text)
+        await callback.answer()
+
+    @dp.message(PremiumPurchase.waiting_check, F.photo)
+    async def premium_check_received(message: Message, state: FSMContext):
+        fsm_data = await state.get_data()
+        tid = fsm_data.get("prem_tariff_id")
+        pid = fsm_data.get("prem_payment_id")
+        tariff = info["premium_tariffs"].get(tid)
+        psys = info["payment_systems"].get(pid)
+        if not tariff or not psys:
+            await message.answer("❌ Ma'lumot topilmadi, qaytadan /start bosing.")
+            await state.clear()
+            return
+        uid = message.from_user.id
+        uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        caption = (
+            "🧾 <b>Yangi Premium to'lovi</b>\n\n"
+            f"💎 Tarif: {tariff['name']} ({tariff['days']} kun)\n"
+            f"💰 Narx: {tariff['price']:,} so'm\n"
+            f"💳 To'lov tizimi: {psys['name']}\n"
+            f"👤 Foydalanuvchi: {uname} (ID: <code>{uid}</code>)"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"premapprove_{uid}_{tid}"),
+            InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"premreject_{uid}"),
+        ]])
+        for aid in info.get("admin_ids", [admin_id]):
+            try:
+                await message.bot.send_photo(chat_id=aid, photo=message.photo[-1].file_id, caption=caption, reply_markup=kb)
+            except Exception as e:
+                logging.error(f"Adminga chek yuborishda xato ({aid}): {e}")
+        await message.answer(
+            "✅ Chekingiz qabul qilindi!\n\n"
+            "Adminlar tomonidan tez orada ko'rib chiqiladi. Agar to'lov muvaffaqiyatli "
+            "amalga oshirilgan bo'lsa, sizga premium obunasi beriladi."
+        )
+        await state.clear()
+
+    @dp.callback_query(F.data.startswith("premapprove_"))
+    async def premium_approve_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        _, target_uid, tid = callback.data.split("_", 2)
+        target_uid = int(target_uid)
+        tariff = info["premium_tariffs"].get(tid)
+        if not tariff:
+            await callback.answer("❌ Tarif topilmadi.", show_alert=True)
+            return
+        until = datetime.now() + timedelta(days=tariff["days"])
+        info["premium_users"][str(target_uid)] = {"until": until.isoformat()}
+        save_data()
+        try:
+            await callback.bot.send_message(
+                chat_id=target_uid,
+                text=(
+                    "✅ <b>Chekingiz qabul qilindi!</b>\n\n"
+                    f"Sizga {tariff['days']} kunlik Premium obuna berildi. "
+                    f"Amal qilish muddati: {until.strftime('%d.%m.%Y')} gacha.\n\n"
+                    "Endi kanallarga obuna bo'lmasdan botdan to'liq foydalanishingiz mumkin! 🎉"
+                ),
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga premium xabarini yuborishda xato: {e}")
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ <b>TASDIQLANDI</b>")
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("premreject_"))
+    async def premium_reject_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        target_uid = int(callback.data.split("_", 1)[1])
+        try:
+            await callback.bot.send_message(
+                chat_id=target_uid,
+                text=(
+                    "❌ <b>To'lovingiz admin tomonidan bekor qilindi.</b>\n\n"
+                    "Agar savollaringiz bo'lsa, administrator bilan bog'laning."
+                ),
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga rad javobini yuborishda xato: {e}")
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ <b>BEKOR QILINDI</b>")
+        await callback.answer()
+
+
+
+
 # ---------- Kino bot ----------
 def setup_kino_bot(dp: Dispatcher, token: str):
     info = data["bots"][token]
     admin_id = info["admin_id"]
     info["stats"].setdefault("requests", 0)
-    info.setdefault("payment_systems", {})
-    info.setdefault("premium_tariffs", {})
-    info.setdefault("premium_users", {})
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: kstart(m))
 
     def kino_admin_kb():
@@ -1835,351 +2283,11 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await callback.message.answer(f"🗑 Kod {code} o'chirildi.")
         await callback.answer()
 
-    # ---------- To'lov tizimlari (admin) ----------
-    def payment_systems_kb():
-        buttons = [[InlineKeyboardButton(text="➕ To'lov tizimi qo'shish", callback_data="ps_add")]]
-        if info["payment_systems"]:
-            buttons.append([InlineKeyboardButton(text="📋 Ro'yxat", callback_data="ps_list")])
-            buttons.append([InlineKeyboardButton(text="➖ O'chirish", callback_data="ps_del")])
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    @dp.message(F.text == "💳 To'lov tizimlar")
-    async def payment_systems_panel(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["payment_systems"]:
-            await message.answer("⚠️ To'lov tizimlari mavjud emas.", reply_markup=payment_systems_kb())
-        else:
-            await message.answer("💳 To'lov tizimlari boshqaruvi:", reply_markup=payment_systems_kb())
-
-    @dp.callback_query(F.data == "ps_add")
-    async def ps_add_cb(callback: CallbackQuery, state: FSMContext):
-        if not is_admin(info, callback.from_user.id):
-            return
-        await callback.message.answer("Iltimos, to'lov tizimi nomini kiriting:\n\n(Masalan: Click, Payme, Humo, Uzcard...)")
-        await state.set_state(PaymentSystemAdd.waiting_name)
-        await callback.answer()
-
-    @dp.message(PaymentSystemAdd.waiting_name)
-    async def ps_name_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await state.update_data(ps_name=message.text.strip())
-        await message.answer("Iltimos, to'lov tizimi raqamini kiriting:\n\n(Masalan: karta yoki hisob raqami)")
-        await state.set_state(PaymentSystemAdd.waiting_number)
-
-    @dp.message(PaymentSystemAdd.waiting_number)
-    async def ps_number_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await state.update_data(ps_number=message.text.strip())
-        await message.answer("Hisob raqami egasining to'liq ismini kiriting:\n\n(Masalan: Ism Familiya)")
-        await state.set_state(PaymentSystemAdd.waiting_owner)
-
-    @dp.message(PaymentSystemAdd.waiting_owner)
-    async def ps_owner_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        fsm_data = await state.get_data()
-        psid = uuid.uuid4().hex[:8]
-        info["payment_systems"][psid] = {
-            "name": fsm_data.get("ps_name", "-"),
-            "number": fsm_data.get("ps_number", "-"),
-            "owner": message.text.strip(),
-        }
-        save_data()
-        await message.answer("✅ To'lov tizimi qo'shildi!")
-        await state.clear()
-
-    @dp.callback_query(F.data == "ps_list")
-    async def ps_list_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        if not info["payment_systems"]:
-            await callback.message.answer("To'lov tizimlari mavjud emas.")
-        else:
-            lines = [f"• {p['name']} — {p['number']} ({p['owner']})" for p in info["payment_systems"].values()]
-            await callback.message.answer("💳 To'lov tizimlari:\n\n" + "\n".join(lines))
-        await callback.answer()
-
-    @dp.callback_query(F.data == "ps_del")
-    async def ps_del_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        if not info["payment_systems"]:
-            await callback.message.answer("O'chirish uchun to'lov tizimi yo'q.")
-            await callback.answer()
-            return
-        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"psdel_{pid}")] for pid, p in info["payment_systems"].items()]
-        await callback.message.answer("O'chirmoqchi bo'lgan to'lov tizimini tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("psdel_"))
-    async def ps_delid_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        pid = callback.data.split("_", 1)[1]
-        removed = info["payment_systems"].pop(pid, None)
-        save_data()
-        if removed:
-            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
-        await callback.answer()
-
-    # ---------- Premium tariflar (admin) ----------
-    def premium_admin_kb():
-        buttons = [[InlineKeyboardButton(text="➕ Tarif qo'shish", callback_data="pt_add")]]
-        if info["premium_tariffs"]:
-            buttons.append([InlineKeyboardButton(text="📋 Ro'yxat", callback_data="pt_list")])
-            buttons.append([InlineKeyboardButton(text="➖ O'chirish", callback_data="pt_del")])
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    @dp.message(F.text == "💎 Premium")
-    async def premium_admin_panel(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer("💎 Premium tariflar boshqaruvi:", reply_markup=premium_admin_kb())
-
-    @dp.callback_query(F.data == "pt_add")
-    async def pt_add_cb(callback: CallbackQuery, state: FSMContext):
-        if not is_admin(info, callback.from_user.id):
-            return
-        await callback.message.answer("Tarif nomini kiriting:\n\n(Masalan: 1 kunlik obuna)")
-        await state.set_state(PremiumTariffAdd.waiting_name)
-        await callback.answer()
-
-    @dp.message(PremiumTariffAdd.waiting_name)
-    async def pt_name_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await state.update_data(pt_name=message.text.strip())
-        await message.answer("Necha kunlik? (faqat raqam, masalan: 1):")
-        await state.set_state(PremiumTariffAdd.waiting_days)
-
-    @dp.message(PremiumTariffAdd.waiting_days)
-    async def pt_days_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        try:
-            days = int(message.text.strip())
-            if days <= 0:
-                raise ValueError
-        except ValueError:
-            await message.answer("❌ Musbat butun raqam kiriting (masalan: 1).")
-            return
-        await state.update_data(pt_days=days)
-        await message.answer("Narxini kiriting (so'mda, faqat raqam):")
-        await state.set_state(PremiumTariffAdd.waiting_price)
-
-    @dp.message(PremiumTariffAdd.waiting_price)
-    async def pt_price_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        try:
-            price = int(message.text.strip())
-            if price <= 0:
-                raise ValueError
-        except ValueError:
-            await message.answer("❌ Musbat butun raqam kiriting (masalan: 5000).")
-            return
-        fsm_data = await state.get_data()
-        tid = uuid.uuid4().hex[:8]
-        info["premium_tariffs"][tid] = {
-            "name": fsm_data.get("pt_name", "-"),
-            "days": fsm_data.get("pt_days", 1),
-            "price": price,
-        }
-        save_data()
-        await message.answer("✅ Tarif qo'shildi!")
-        await state.clear()
-
-    @dp.callback_query(F.data == "pt_list")
-    async def pt_list_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        if not info["premium_tariffs"]:
-            await callback.message.answer("Tariflar mavjud emas.")
-        else:
-            lines = [f"• {t['name']} — {t['days']} kun — {t['price']:,} so'm" for t in info["premium_tariffs"].values()]
-            await callback.message.answer("💎 Premium tariflar:\n\n" + "\n".join(lines))
-        await callback.answer()
-
-    @dp.callback_query(F.data == "pt_del")
-    async def pt_del_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        if not info["premium_tariffs"]:
-            await callback.message.answer("O'chirish uchun tarif yo'q.")
-            await callback.answer()
-            return
-        buttons = [[InlineKeyboardButton(text=t["name"], callback_data=f"ptdel_{tid}")] for tid, t in info["premium_tariffs"].items()]
-        await callback.message.answer("O'chirmoqchi bo'lgan tarifni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("ptdel_"))
-    async def pt_delid_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        tid = callback.data.split("_", 1)[1]
-        removed = info["premium_tariffs"].pop(tid, None)
-        save_data()
-        if removed:
-            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
-        await callback.answer()
-
-    # ---------- Premium sotib olish (mijoz) ----------
-    @dp.callback_query(F.data == "buy_premium")
-    async def buy_premium_cb(callback: CallbackQuery):
-        if not info["premium_tariffs"]:
-            await callback.answer("Hozircha Premium tariflar mavjud emas.", show_alert=True)
-            return
-        buttons = [
-            [InlineKeyboardButton(text=f"{t['name']} - {t['price']:,} so'm", callback_data=f"premtariff_{tid}")]
-            for tid, t in info["premium_tariffs"].items()
-        ]
-        text = (
-            "💎 <b>Premium obuna</b>\n\n"
-            "Premium orqali quyidagilarga ega bo'lasiz:\n"
-            "• Kanallarga obuna bo'lmasdan kino ko'rish\n"
-            "• Reklamalarsiz foydalanish\n"
-            "• Yuqori sifatda tomosha qilish\n\n"
-            "📋 Quyidagi tariflardan birini tanlang:"
-        )
-        await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("premtariff_"))
-    async def premium_tariff_chosen_cb(callback: CallbackQuery):
-        tid = callback.data.split("_", 1)[1]
-        tariff = info["premium_tariffs"].get(tid)
-        if not tariff:
-            await callback.answer("❌ Bu tarif endi mavjud emas.", show_alert=True)
-            return
-        if not info["payment_systems"]:
-            await callback.answer("Hozircha to'lov tizimlari mavjud emas. Administratorga murojaat qiling.", show_alert=True)
-            return
-        buttons = [
-            [InlineKeyboardButton(text=p["name"], callback_data=f"prempay_{tid}_{pid}")]
-            for pid, p in info["payment_systems"].items()
-        ]
-        buttons.append([InlineKeyboardButton(text="◀️ Orqaga", callback_data="buy_premium")])
-        text = (
-            "💳 <b>To'lov tizimini tanlang</b>\n\n"
-            f"💎 Tarif: {tariff['name']}\n"
-            f"📆 Muddat: {tariff['days']} kun\n"
-            f"💰 Narx: {tariff['price']:,} so'm"
-        )
-        await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("prempay_"))
-    async def premium_payment_chosen_cb(callback: CallbackQuery, state: FSMContext):
-        _, tid, pid = callback.data.split("_", 2)
-        tariff = info["premium_tariffs"].get(tid)
-        psys = info["payment_systems"].get(pid)
-        if not tariff or not psys:
-            await callback.answer("❌ Ma'lumot topilmadi, qaytadan urinib ko'ring.", show_alert=True)
-            return
-        await state.update_data(prem_tariff_id=tid, prem_payment_id=pid)
-        await state.set_state(PremiumPurchase.waiting_check)
-        text = (
-            f"💳 <b>{psys['name']}</b>\n\n"
-            f"🔢 Raqami: <code>{psys['number']}</code>\n"
-            f"👤 Egasi: {psys['owner']}\n\n"
-            f"💰 To'lov summasi: {tariff['price']:,} so'm\n\n"
-            "To'lovni amalga oshirgach, to'lov chekini (skrinshot) shu yerga yuboring."
-        )
-        await callback.message.answer(text)
-        await callback.answer()
-
-    @dp.message(PremiumPurchase.waiting_check, F.photo)
-    async def premium_check_received(message: Message, state: FSMContext):
-        fsm_data = await state.get_data()
-        tid = fsm_data.get("prem_tariff_id")
-        pid = fsm_data.get("prem_payment_id")
-        tariff = info["premium_tariffs"].get(tid)
-        psys = info["payment_systems"].get(pid)
-        if not tariff or not psys:
-            await message.answer("❌ Ma'lumot topilmadi, qaytadan /start bosing.")
-            await state.clear()
-            return
-        uid = message.from_user.id
-        uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
-        caption = (
-            "🧾 <b>Yangi Premium to'lovi</b>\n\n"
-            f"💎 Tarif: {tariff['name']} ({tariff['days']} kun)\n"
-            f"💰 Narx: {tariff['price']:,} so'm\n"
-            f"💳 To'lov tizimi: {psys['name']}\n"
-            f"👤 Foydalanuvchi: {uname} (ID: <code>{uid}</code>)"
-        )
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"premapprove_{uid}_{tid}"),
-            InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"premreject_{uid}"),
-        ]])
-        for aid in info.get("admin_ids", [admin_id]):
-            try:
-                await message.bot.send_photo(chat_id=aid, photo=message.photo[-1].file_id, caption=caption, reply_markup=kb)
-            except Exception as e:
-                logging.error(f"Adminga chek yuborishda xato ({aid}): {e}")
-        await message.answer(
-            "✅ Chekingiz qabul qilindi!\n\n"
-            "Adminlar tomonidan tez orada ko'rib chiqiladi. Agar to'lov muvaffaqiyatli "
-            "amalga oshirilgan bo'lsa, sizga premium obunasi beriladi."
-        )
-        await state.clear()
-
-    @dp.callback_query(F.data.startswith("premapprove_"))
-    async def premium_approve_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        _, target_uid, tid = callback.data.split("_", 2)
-        target_uid = int(target_uid)
-        tariff = info["premium_tariffs"].get(tid)
-        if not tariff:
-            await callback.answer("❌ Tarif topilmadi.", show_alert=True)
-            return
-        until = datetime.now() + timedelta(days=tariff["days"])
-        info["premium_users"][str(target_uid)] = {"until": until.isoformat()}
-        save_data()
-        try:
-            await callback.bot.send_message(
-                chat_id=target_uid,
-                text=(
-                    "✅ <b>Chekingiz qabul qilindi!</b>\n\n"
-                    f"Sizga {tariff['days']} kunlik Premium obuna berildi. "
-                    f"Amal qilish muddati: {until.strftime('%d.%m.%Y')} gacha.\n\n"
-                    "Endi kanallarga obuna bo'lmasdan kino tomosha qilishingiz mumkin! 🎬"
-                ),
-            )
-        except Exception as e:
-            logging.error(f"Foydalanuvchiga premium xabarini yuborishda xato: {e}")
-        await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ <b>TASDIQLANDI</b>")
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("premreject_"))
-    async def premium_reject_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        target_uid = int(callback.data.split("_", 1)[1])
-        try:
-            await callback.bot.send_message(
-                chat_id=target_uid,
-                text=(
-                    "❌ <b>To'lovingiz admin tomonidan bekor qilindi.</b>\n\n"
-                    "Agar savollaringiz bo'lsa, administrator bilan bog'laning."
-                ),
-            )
-        except Exception as e:
-            logging.error(f"Foydalanuvchiga rad javobini yuborishda xato: {e}")
-        await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ <b>BEKOR QILINDI</b>")
-        await callback.answer()
-
     @dp.message(F.text)
     async def get_movie(message: Message):
         if not await check_active(message, info, admin_id):
             return
-        if is_premium_active(info, message.from_user.id):
-            pass  # Premium foydalanuvchi — majburiy obunadan o'tadi
-        elif not await require_subscription(message, info, admin_id, show_premium=bool(info["premium_tariffs"])):
+        if not await require_subscription(message, info, admin_id):
             return
         code = message.text.strip()
         info["stats"]["requests"] += 1
@@ -2205,6 +2313,7 @@ def setup_shop_bot(dp: Dispatcher, token: str):
     info["stats"].setdefault("revenue", 0)
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: sstart(m))
 
     def admin_kb():
@@ -2257,6 +2366,7 @@ def setup_shop_bot(dp: Dispatcher, token: str):
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     @dp.message(Command("start"))
@@ -2530,6 +2640,7 @@ def setup_ai_bot(dp: Dispatcher, token: str):
     info["stats"].setdefault("questions", 0)
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: astart(m))
 
     def ai_admin_kb():
@@ -2537,6 +2648,7 @@ def setup_ai_bot(dp: Dispatcher, token: str):
             [KeyboardButton(text="🔄 Yangi suhbat"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📢 Xabar yuborish")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def ai_user_kb():
@@ -2659,6 +2771,7 @@ def setup_post_bot(dp: Dispatcher, token: str):
     info.setdefault("welcome_text", "📢 Yangiliklarga obuna bo'ldingiz!")
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: pstart(m))
 
     def admin_kb():
@@ -2671,6 +2784,7 @@ def setup_post_bot(dp: Dispatcher, token: str):
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="✏️ Salom xabarini sozlash")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     @dp.message(Command("start"))
@@ -2685,6 +2799,8 @@ def setup_post_bot(dp: Dispatcher, token: str):
             await message.answer("📢 <b>E'lon bot boshqaruvi</b>", reply_markup=admin_kb())
             await message.answer("Qo'shimcha bo'limlar 👇", reply_markup=post_menu_kb())
         else:
+            if not await require_subscription(message, info, admin_id):
+                return
             await message.answer(info["welcome_text"])
 
     @dp.message(F.text == "✏️ Salom xabarini sozlash")
@@ -2796,6 +2912,7 @@ def setup_money_bot(dp: Dispatcher, token: str):
     info.setdefault("rates", {"USD": 12650, "EUR": 13700, "RUB": 140})
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: mstart(m))
 
     def admin_kb():
@@ -2803,6 +2920,7 @@ def setup_money_bot(dp: Dispatcher, token: str):
             [KeyboardButton(text="➕ Valyuta qo'shish"), KeyboardButton(text="✏️ Kursni yangilash")],
             [KeyboardButton(text="🗑 Valyutani o'chirish"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def currency_kb():
@@ -2958,6 +3076,7 @@ def setup_translate_bot(dp: Dispatcher, token: str):
     info.setdefault("user_lang", {})
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: tstart(m))
 
     LANGS = {"uz": "🇺🇿 O'zbek", "en": "🇬🇧 English", "ru": "🇷🇺 Русский", "tr": "🇹🇷 Türkçe", "ar": "🇸🇦 العربية"}
@@ -2973,6 +3092,7 @@ def setup_translate_bot(dp: Dispatcher, token: str):
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     @dp.message(Command("start"))
@@ -3086,12 +3206,14 @@ def setup_contact_bot(dp: Dispatcher, token: str):
     info.setdefault("reply_map", {})
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: cstart(m))
 
     def admin_kb():
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     @dp.message(Command("start"))
@@ -3157,6 +3279,7 @@ def setup_survey_bot(dp: Dispatcher, token: str):
     info.setdefault("responses_data", {})
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: survstart(m, s))
 
     def admin_kb():
@@ -3164,6 +3287,7 @@ def setup_survey_bot(dp: Dispatcher, token: str):
             [KeyboardButton(text="➕ Savol qo'shish"), KeyboardButton(text="📋 Savollar")],
             [KeyboardButton(text="🗑 Savolni o'chirish"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     @dp.message(Command("start"))
@@ -3267,12 +3391,14 @@ def setup_weather_bot(dp: Dispatcher, token: str):
     info["stats"].setdefault("lookups", 0)
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: wstart(m))
 
     def admin_kb():
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ], resize_keyboard=True)
 
     def user_kb():
@@ -3346,9 +3472,9 @@ def setup_nakrutka_bot(dp: Dispatcher, token: str):
     info["stats"].setdefault("orders", 0)
     info.setdefault("orders", {})
     info.setdefault("nakrutka_services", {})
-    info.setdefault("payment_systems", {})
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: nstart(m))
 
     def nakrutka_admin_kb():
@@ -3357,6 +3483,7 @@ def setup_nakrutka_bot(dp: Dispatcher, token: str):
             [KeyboardButton(text="➖ Xizmat o'chirish")],
             [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def services_kb():
@@ -3456,96 +3583,6 @@ def setup_nakrutka_bot(dp: Dispatcher, token: str):
             return
         sid = callback.data.split("_", 1)[1]
         removed = info["nakrutka_services"].pop(sid, None)
-        save_data()
-        if removed:
-            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
-        await callback.answer()
-
-    # ---- To'lov tizimlari (admin) ----
-    def payment_systems_kb():
-        buttons = [[InlineKeyboardButton(text="➕ To'lov tizimi qo'shish", callback_data="ps_add")]]
-        if info["payment_systems"]:
-            buttons.append([InlineKeyboardButton(text="📋 Ro'yxat", callback_data="ps_list")])
-            buttons.append([InlineKeyboardButton(text="➖ O'chirish", callback_data="ps_del")])
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    @dp.message(F.text == "💳 To'lov tizimlar")
-    async def payment_systems_panel(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["payment_systems"]:
-            await message.answer("⚠️ To'lov tizimlari mavjud emas.", reply_markup=payment_systems_kb())
-        else:
-            await message.answer("💳 To'lov tizimlari boshqaruvi:", reply_markup=payment_systems_kb())
-
-    @dp.callback_query(F.data == "ps_add")
-    async def ps_add_cb(callback: CallbackQuery, state: FSMContext):
-        if not is_admin(info, callback.from_user.id):
-            return
-        await callback.message.answer("Iltimos, to'lov tizimi nomini kiriting:\n\n(Masalan: Click, Payme, Humo, Uzcard...)")
-        await state.set_state(PaymentSystemAdd.waiting_name)
-        await callback.answer()
-
-    @dp.message(PaymentSystemAdd.waiting_name)
-    async def ps_name_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await state.update_data(ps_name=message.text.strip())
-        await message.answer("Iltimos, to'lov tizimi raqamini kiriting:\n\n(Masalan: karta yoki hisob raqami)")
-        await state.set_state(PaymentSystemAdd.waiting_number)
-
-    @dp.message(PaymentSystemAdd.waiting_number)
-    async def ps_number_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await state.update_data(ps_number=message.text.strip())
-        await message.answer("Hisob raqami egasining to'liq ismini kiriting:\n\n(Masalan: Ism Familiya)")
-        await state.set_state(PaymentSystemAdd.waiting_owner)
-
-    @dp.message(PaymentSystemAdd.waiting_owner)
-    async def ps_owner_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        fsm_data = await state.get_data()
-        psid = uuid.uuid4().hex[:8]
-        info["payment_systems"][psid] = {
-            "name": fsm_data.get("ps_name", "-"),
-            "number": fsm_data.get("ps_number", "-"),
-            "owner": message.text.strip(),
-        }
-        save_data()
-        await message.answer("✅ To'lov tizimi qo'shildi!")
-        await state.clear()
-
-    @dp.callback_query(F.data == "ps_list")
-    async def ps_list_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        if not info["payment_systems"]:
-            await callback.message.answer("To'lov tizimlari mavjud emas.")
-        else:
-            lines = [f"• {p['name']} — {p['number']} ({p['owner']})" for p in info["payment_systems"].values()]
-            await callback.message.answer("💳 To'lov tizimlari:\n\n" + "\n".join(lines))
-        await callback.answer()
-
-    @dp.callback_query(F.data == "ps_del")
-    async def ps_del_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        if not info["payment_systems"]:
-            await callback.message.answer("O'chirish uchun to'lov tizimi yo'q.")
-            await callback.answer()
-            return
-        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"psdel_{pid}")] for pid, p in info["payment_systems"].items()]
-        await callback.message.answer("O'chirmoqchi bo'lgan to'lov tizimini tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("psdel_"))
-    async def ps_delid_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        pid = callback.data.split("_", 1)[1]
-        removed = info["payment_systems"].pop(pid, None)
         save_data()
         if removed:
             await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
@@ -3714,12 +3751,14 @@ def setup_taxi_bot(dp: Dispatcher, token: str):
     info.setdefault("orders", {})
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: tstart(m))
 
     def taxi_admin_kb():
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def taxi_order_kb():
@@ -3962,5 +4001,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
