@@ -623,12 +623,15 @@ async def require_subscription(event, info: dict, admin_id: int) -> bool:
     if is_premium_active(info, uid):
         return True
     channels = info.get("channels", {})
-    show_premium = info.get("premium_enabled", False) and bool(info.get("premium_tariffs"))
+    premium_required = info.get("premium_enabled", False) and bool(info.get("premium_tariffs"))
     missing = await get_missing_channels(event.bot, channels, uid) if channels else []
-    if missing or (show_premium and not channels):
-        kb = subscribe_kb(missing, channels, show_premium=show_premium)
+
+    if premium_required:
+        # Premium yoqilgan bo'lsa, majburiy obunaga obuna bo'lish botni ochib bermaydi —
+        # botdan foydalanish faqat Premium sotib olish orqali mumkin.
+        kb = subscribe_kb(missing, channels, show_premium=True)
         if missing:
-            text = "Botdan foydalanish uchun quyidagi kanal(lar)ga obuna bo'ling:"
+            text = "Botdan foydalanish uchun quyidagi kanal(lar)ga obuna bo'ling, YOKI Premium sotib oling:"
         else:
             text = "💎 Botdan foydalanish uchun Premium sotib oling:"
         if isinstance(event, CallbackQuery):
@@ -637,6 +640,17 @@ async def require_subscription(event, info: dict, admin_id: int) -> bool:
         else:
             await event.answer(text, reply_markup=kb)
         return False
+
+    if missing:
+        kb = subscribe_kb(missing, channels, show_premium=False)
+        text = "Botdan foydalanish uchun quyidagi kanal(lar)ga obuna bo'ling:"
+        if isinstance(event, CallbackQuery):
+            await event.message.answer(text, reply_markup=kb)
+            await event.answer()
+        else:
+            await event.answer(text, reply_markup=kb)
+        return False
+
     return True
 
 
@@ -812,10 +826,16 @@ def setup_subscription_handlers(dp: Dispatcher, token: str, admin_id: int):
     @dp.callback_query(F.data == "check_sub")
     async def check_sub_cb(callback: CallbackQuery):
         missing = await get_missing_channels(callback.bot, info["channels"], callback.from_user.id)
+        premium_required = info.get("premium_enabled", False) and bool(info.get("premium_tariffs"))
         if missing:
             await callback.answer("Hali barcha kanallarga obuna bo'lmagansiz ❌", show_alert=True)
+        elif premium_required and not is_premium_active(info, callback.from_user.id):
+            await callback.answer(
+                "✅ Kanallarga obuna bo'ldingiz, lekin botdan foydalanish uchun Premium sotib olishingiz kerak.",
+                show_alert=True,
+            )
         else:
-            await callback.message.edit_text("✅ Rahmat! Endi /start bosib davom eting.")
+            await callback.message.edit_text("✅ Obuna tasdiqlandi! Endi so'rovingizni qayta yuboring.")
             await callback.answer()
 
     @dp.message(Command("channels"))
