@@ -3443,10 +3443,32 @@ MINIAPP_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script>
-  const tg = window.Telegram?.WebApp;
-  if (tg) { tg.ready(); tg.expand(); }
+  window.addEventListener("error", function (e) {
+    const content = document.getElementById("content");
+    if (content) {
+      content.innerHTML = '<div class="state-msg">Sahifada xatolik: ' + escapeHtmlSafe(String(e.message || e)) + '</div>';
+    }
+  });
+
+  function escapeHtmlSafe(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function loadTelegramSdk(timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      const timer = setTimeout(finish, timeoutMs);
+      const el = document.createElement("script");
+      el.src = "https://telegram.org/js/telegram-web-app.js";
+      el.onload = () => { clearTimeout(timer); finish(); };
+      el.onerror = () => { clearTimeout(timer); finish(); };
+      document.head.appendChild(el);
+    });
+  }
 
   const TYPE_COLORS = {
     "kino": "#7b5cff", "shop": "#12b886", "ai": "#2481cc",
@@ -3461,8 +3483,24 @@ MINIAPP_HTML = """<!DOCTYPE html>
     return (name || "?").trim().slice(0, 1).toUpperCase();
   }
 
+  function fetchWithTimeout(url, ms) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+  }
+
   async function load() {
     const content = document.getElementById("content");
+
+    await loadTelegramSdk(4000);
+    const tg = window.Telegram?.WebApp;
+    if (tg) { tg.ready(); tg.expand(); }
+
+    if (!tg) {
+      content.innerHTML = '<div class="state-msg">Telegram SDK yuklanmadi. Internet aloqasini tekshirib, sahifani qayta oching.</div>';
+      return;
+    }
+
     const initData = tg?.initData || "";
 
     if (!initData) {
@@ -3471,8 +3509,11 @@ MINIAPP_HTML = """<!DOCTYPE html>
     }
 
     try {
-      const res = await fetch("/api/mybots?" + new URLSearchParams({ initData }));
-      if (!res.ok) throw new Error("bad response");
+      const res = await fetchWithTimeout("/api/mybots?" + new URLSearchParams({ initData }), 8000);
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        throw new Error("Server javobi: " + res.status + " " + errBody.slice(0, 120));
+      }
       const data = await res.json();
 
       let html = "";
@@ -3501,7 +3542,8 @@ MINIAPP_HTML = """<!DOCTYPE html>
 
       content.innerHTML = html;
     } catch (e) {
-      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi. Birozdan so\'ng qayta urinib ko\'ring.</div>';
+      const reason = e && e.name === "AbortError" ? "Server 8 soniyada javob bermadi (timeout)." : (e.message || String(e));
+      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi.<br><span style="font-size:12px">' + escapeHtmlSafe(reason) + '</span></div>';
     }
   }
 
