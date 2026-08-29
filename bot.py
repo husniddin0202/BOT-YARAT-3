@@ -3211,6 +3211,12 @@ def setup_global_buttons_handler(dp: Dispatcher, start_func=None):
 async def start_child_bot(token: str, bot_type: str):
     if token in running_bots:
         return
+    if bot_type not in SETUP_FUNCTIONS:
+        logging.error(
+            f"'{bot_type}' turidagi bot ishga tushirilmadi (token: ...{token[-6:]}) — "
+            "bu bot turi endi platformada mavjud emas."
+        )
+        return
     child_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     child_dp = Dispatcher(storage=MemoryStorage())
     SETUP_FUNCTIONS[bot_type](child_dp, token)
@@ -3597,9 +3603,15 @@ async def main():
 
     for token, info in data["bots"].items():
         info.setdefault("stats", {})
-        await start_child_bot(token, info["type"])
+        try:
+            await start_child_bot(token, info["type"])
+        except Exception as e:
+            logging.error(f"Bot ishga tushmadi (token: ...{token[-6:]}, tur: {info.get('type')}): {e}")
     for clone in data.get("platform_clones", []):
-        await start_platform_clone(clone["token"], clone.get("username"))
+        try:
+            await start_platform_clone(clone["token"], clone.get("username"))
+        except Exception as e:
+            logging.error(f"Klon ishga tushmadi: {e}")
     asyncio.create_task(trial_warning_loop())
     await main_dp.start_polling(main_bot)
 
