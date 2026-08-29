@@ -3,13 +3,17 @@ import json
 import asyncio
 import logging
 import uuid
+import hmac
+import hashlib
+from urllib.parse import parse_qsl
 import httpx
 from datetime import datetime, timedelta
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from io import BytesIO
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, MenuButtonWebApp, WebAppInfo
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.fsm.context import FSMContext
@@ -40,13 +44,8 @@ BOT_TYPES = {
     "kino": "🎬 Kino bot",
     "shop": "🛒 Savdo bot",
     "ai": "🤖 AI-yordamchi bot",
-    "post": "📢 E'lon/Xabar bot",
     "money": "💱 Pul (valyuta) bot",
     "translate": "🌐 Tarjimon bot",
-    "contact": "📞 Aloqa bot",
-    "survey": "📝 Anketa bot",
-    "weather": "🌤 Ob-havo bot",
-    "nakrutka": "🚀 Nakrutka bot",
     "taxi": "🚕 Taksi bot",
 }
 
@@ -54,13 +53,8 @@ DEFAULT_PRICES = {
     "kino": 120_000,
     "ai": 120_000,
     "shop": 120_000,
-    "post": 120_000,
     "money": 120_000,
     "translate": 120_000,
-    "contact": 120_000,
-    "survey": 120_000,
-    "weather": 120_000,
-    "nakrutka": 120_000,
     "taxi": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
@@ -217,12 +211,6 @@ BOT_DESCRIPTIONS = {
         "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
         "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
     ),
-    "post": (
-        "<i>Obunachilaringizga tezkor e'lon va xabarlar yuborish uchun mo'ljallangan bot.</i>\n\n"
-        "📢 Barcha foydalanuvchilarga bir zumda ommaviy xabar yuborish imkoniyati.\n\n"
-        "📊 Yuborilgan xabarlar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
-        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
-    ),
     "money": (
         "<i>Joriy valyuta kurslarini ko'rsatadigan bot.</i>\n\n"
         "💱 Dollar, Yevro va boshqa valyutalarning kursini bir zumda ko'rsatadi.\n\n"
@@ -233,31 +221,6 @@ BOT_DESCRIPTIONS = {
         "<i>Matnlarni turli tillarga tarjima qiladigan bot.</i>\n\n"
         "🌐 Foydalanuvchi matn yuboradi — bot kerakli tilga tezkor tarjima qiladi.\n\n"
         "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
-        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
-    ),
-    "contact": (
-        "<i>Mijozlar bilan to'g'ridan-to'g'ri aloqa o'rnatish uchun mo'ljallangan bot.</i>\n\n"
-        "📞 Foydalanuvchi xabari to'g'ridan-to'g'ri sizga (adminga) forward qilinadi.\n\n"
-        "📊 Xabarlar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
-        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
-    ),
-    "survey": (
-        "<i>Foydalanuvchilardan so'rovnoma orqali ma'lumot yig'ish uchun bot.</i>\n\n"
-        "📝 Savollar ketma-ketligini o'zingiz sozlaysiz, javoblar saqlanib boriladi.\n\n"
-        "📊 Natijalar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
-        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
-    ),
-    "weather": (
-        "<i>Istalgan shahar bo'yicha joriy ob-havo ma'lumotini beradigan bot.</i>\n\n"
-        "🌤 Foydalanuvchi shahar nomini yuboradi — harorat, namlik va shamol tezligi chiqadi.\n\n"
-        "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
-        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
-    ),
-    "nakrutka": (
-        "<i>Telegram, Instagram, TikTok va YouTube kabi tarmoqlar uchun obunachi, like va "
-        "ko'rishlar xizmatini sotadigan bot.</i>\n\n"
-        "🚀 Xizmatlar ro'yxati va narxlarini o'zingiz belgilaysiz.\n\n"
-        "💳 Mijoz buyurtma berib, chek yuboradi — siz tasdiqlaysiz.\n\n"
         "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
     ),
     "taxi": (
@@ -406,17 +369,6 @@ class PremiumPurchase(StatesGroup):
     waiting_check = State()
 
 
-class NakrutkaService(StatesGroup):
-    waiting_name = State()
-    waiting_price = State()
-
-
-class NakrutkaOrder(StatesGroup):
-    waiting_qty = State()
-    waiting_link = State()
-    waiting_check = State()
-
-
 class TaxiOrder(StatesGroup):
     waiting_from = State()
     waiting_to = State()
@@ -448,18 +400,6 @@ class CurrencyUpdate(StatesGroup):
 
 class MoneyAmount(StatesGroup):
     waiting_amount = State()
-
-
-class SurveyAdmin(StatesGroup):
-    waiting_question = State()
-
-
-class SurveyAnswer(StatesGroup):
-    answering = State()
-
-
-class WeatherCity(StatesGroup):
-    waiting_city = State()
 
 
 class AddAdmin(StatesGroup):
@@ -2779,151 +2719,6 @@ def setup_ai_bot(dp: Dispatcher, token: str):
             await thinking.edit_text("Xatolik yuz berdi, birozdan keyin qayta urinib ko'ring.")
 
 
-# ---------- E'lon/Xabar bot ----------
-class WelcomeFlow(StatesGroup):
-    waiting_text = State()
-
-
-def setup_post_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("posts_sent", 0)
-    info.setdefault("welcome_text", "📢 Yangiliklarga obuna bo'ldingiz!")
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_premium_system(dp, token, admin_id)
-    setup_global_buttons_handler(dp, lambda m, s: pstart(m))
-
-    def admin_kb():
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Xabar yuborish", callback_data="newpost")],
-            [InlineKeyboardButton(text="📊 Statistika", callback_data="pstats")],
-        ])
-
-    def post_menu_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="✏️ Salom xabarini sozlash")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
-        ] + get_global_button_rows(), resize_keyboard=True)
-
-    @dp.message(Command("start"))
-    async def pstart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("📢 <b>E'lon bot boshqaruvi</b>", reply_markup=admin_kb())
-            await message.answer("Qo'shimcha bo'limlar 👇", reply_markup=post_menu_kb())
-        else:
-            if not await require_subscription(message, info, admin_id):
-                return
-            await message.answer(info["welcome_text"])
-
-    @dp.message(F.text == "✏️ Salom xabarini sozlash")
-    async def welcome_edit_start(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"Hozirgi salom xabari:\n\n{info['welcome_text']}\n\nYangi xabar matnini yuboring:"
-        )
-        await state.set_state(WelcomeFlow.waiting_text)
-
-    @dp.message(WelcomeFlow.waiting_text)
-    async def welcome_edit_save(message: Message, state: FSMContext):
-        info["welcome_text"] = message.text
-        save_data()
-        await message.answer("✅ Salom xabari yangilandi.")
-        await state.clear()
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    @dp.callback_query(F.data == "pstats")
-    async def post_stats(event):
-        if not is_admin(info, event.from_user.id):
-            return
-        text = (
-            f"📊 <b>Statistika</b>\n\n"
-            f"👥 Obunachilar: {len(info['users'])}\n"
-            f"📤 Yuborilgan e'lonlar: {info['stats']['posts_sent']}"
-        )
-        if isinstance(event, CallbackQuery):
-            await event.message.answer(text)
-            await event.answer()
-        else:
-            await event.answer(text)
-
-    @dp.callback_query(F.data == "newpost")
-    @dp.message(F.text == "📢 Xabar yuborish")
-    async def newpost_cb(event, state: FSMContext):
-        if not is_admin(info, event.from_user.id):
-            return
-        text = "E'lon matnini yuboring (rasm yubormoqchi bo'lsangiz, rasmni izoh/caption bilan yuboring):"
-        if isinstance(event, CallbackQuery):
-            await event.message.answer(text)
-            await event.answer()
-        else:
-            await event.answer(text)
-        await state.set_state(PostFlow.waiting_text)
-
-    @dp.message(PostFlow.waiting_text, F.photo)
-    async def post_photo(message: Message, state: FSMContext):
-        await state.update_data(photo=message.photo[-1].file_id, text=message.caption or "")
-        buttons = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Yuborish", callback_data="post_confirm")],
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="post_cancel")],
-        ])
-        await message.answer_photo(
-            message.photo[-1].file_id,
-            caption=f"Shu rasm {len(info['users'])} kishiga yuborilsinmi?\n\n{message.caption or ''}",
-            reply_markup=buttons,
-        )
-        await state.set_state(PostFlow.waiting_confirm)
-
-    @dp.message(PostFlow.waiting_text)
-    async def post_text(message: Message, state: FSMContext):
-        await state.update_data(text=message.text, photo=None)
-        buttons = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Yuborish", callback_data="post_confirm")],
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="post_cancel")],
-        ])
-        await message.answer(
-            f"Quyidagi xabar {len(info['users'])} kishiga yuborilsinmi?\n\n{message.text}",
-            reply_markup=buttons,
-        )
-        await state.set_state(PostFlow.waiting_confirm)
-
-    @dp.callback_query(F.data == "post_confirm", PostFlow.waiting_confirm)
-    async def post_confirm_cb(callback: CallbackQuery, state: FSMContext):
-        state_data = await state.get_data()
-        text = state_data.get("text", "")
-        photo = state_data.get("photo")
-        count = 0
-        for uid in info["users"]:
-            try:
-                if photo:
-                    await callback.bot.send_photo(uid, photo, caption=text)
-                else:
-                    await callback.bot.send_message(uid, text)
-                count += 1
-            except Exception:
-                pass
-        info["stats"]["posts_sent"] += 1
-        save_data()
-        await callback.message.edit_caption(caption=f"✅ {count} ta foydalanuvchiga yuborildi.") if photo else await callback.message.edit_text(f"✅ {count} ta foydalanuvchiga yuborildi.")
-        await state.clear()
-        await callback.answer()
-
-    @dp.callback_query(F.data == "post_cancel", PostFlow.waiting_confirm)
-    async def post_cancel_cb(callback: CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("❌ Bekor qilindi.")
-        await state.clear()
-        await callback.answer()
-
-
 # ---------- Pul (valyuta) bot ----------
 def setup_money_bot(dp: Dispatcher, token: str):
     info = data["bots"][token]
@@ -3218,551 +3013,6 @@ def setup_translate_bot(dp: Dispatcher, token: str):
             await thinking.edit_text("Xatolik yuz berdi.")
 
 
-# ---------- Aloqa bot ----------
-def setup_contact_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("messages", 0)
-    info.setdefault("reply_map", {})
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_premium_system(dp, token, admin_id)
-    setup_global_buttons_handler(dp, lambda m, s: cstart(m))
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
-        ] + get_global_button_rows(), resize_keyboard=True)
-
-    @dp.message(Command("start"))
-    async def cstart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer(
-                "📞 <b>Aloqa bot boshqaruvi</b>\n\nFoydalanuvchi xabar yuborsa, sizga keladi. "
-                "Javob berish uchun o'sha xabarga REPLY qilib yozing.",
-                reply_markup=admin_kb(),
-            )
-            return
-        await message.answer("📞 Xabaringizni yozing, tez orada javob beramiz.")
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def contact_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n✉️ Xabarlar: {info['stats']['messages']}"
-        )
-
-    @dp.message(F.text)
-    async def route_message(message: Message):
-        uid = message.from_user.id
-        if is_admin(info, uid):
-            if message.reply_to_message:
-                target = info["reply_map"].get(str(message.reply_to_message.message_id))
-                if target:
-                    try:
-                        await message.bot.send_message(target, f"💬 <b>Javob:</b>\n\n{message.text}")
-                        await message.answer("✅ Yuborildi.")
-                    except Exception:
-                        await message.answer("❌ Yuborib bo'lmadi.")
-            return
-        if not await check_active(message, info, admin_id):
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        info["stats"]["messages"] += 1
-        save_data()
-        username = message.from_user.username or uid
-        sent = await message.bot.send_message(
-            admin_id, f"✉️ <b>Yangi xabar</b>\nKimdan: @{username} (ID: {uid})\n\n{message.text}"
-        )
-        info["reply_map"][str(sent.message_id)] = uid
-        save_data()
-        await message.answer("✅ Xabaringiz yuborildi, tez orada javob beramiz.")
-
-
-# ---------- Anketa bot ----------
-def setup_survey_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("responses", 0)
-    info.setdefault("questions", [])
-    info.setdefault("responses_data", {})
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_premium_system(dp, token, admin_id)
-    setup_global_buttons_handler(dp, lambda m, s: survstart(m, s))
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="➕ Savol qo'shish"), KeyboardButton(text="📋 Savollar")],
-            [KeyboardButton(text="🗑 Savolni o'chirish"), KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
-        ] + get_global_button_rows(), resize_keyboard=True)
-
-    @dp.message(Command("start"))
-    async def survstart(message: Message, state: FSMContext):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("📝 <b>Anketa bot boshqaruvi</b>", reply_markup=admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        if not info["questions"]:
-            await message.answer("Hozircha savollar yo'q.")
-            return
-        await state.update_data(answers=[], q_index=0)
-        await state.set_state(SurveyAnswer.answering)
-        await message.answer(f"📝 Anketa boshlandi!\n\n1) {info['questions'][0]}")
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def survey_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n"
-            f"📝 Javob berganlar: {info['stats']['responses']}\n❓ Savollar soni: {len(info['questions'])}"
-        )
-
-    @dp.message(F.text == "➕ Savol qo'shish")
-    async def add_question_start(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer("Savol matnini yozing:")
-        await state.set_state(SurveyAdmin.waiting_question)
-
-    @dp.message(SurveyAdmin.waiting_question)
-    async def add_question_save(message: Message, state: FSMContext):
-        info["questions"].append(message.text.strip())
-        save_data()
-        await message.answer(f"✅ Savol qo'shildi ({len(info['questions'])}-savol).")
-        await state.clear()
-
-    @dp.message(F.text == "📋 Savollar")
-    async def list_questions(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["questions"]:
-            await message.answer("Savollar yo'q.")
-            return
-        text = "📋 <b>Savollar:</b>\n\n" + "\n".join(f"{i+1}) {q}" for i, q in enumerate(info["questions"]))
-        await message.answer(text)
-
-    @dp.message(F.text == "🗑 Savolni o'chirish")
-    async def del_question_start(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["questions"]:
-            await message.answer("O'chirish uchun savol yo'q.")
-            return
-        buttons = [[InlineKeyboardButton(text=f"{i+1}) {q[:30]}", callback_data=f"delq_{i}")] for i, q in enumerate(info["questions"])]
-        await message.answer("O'chirmoqchi bo'lgan savolni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-    @dp.callback_query(F.data.startswith("delq_"))
-    async def del_question_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        idx = int(callback.data.split("_", 1)[1])
-        if 0 <= idx < len(info["questions"]):
-            removed = info["questions"].pop(idx)
-            save_data()
-            await callback.message.answer(f"🗑 O'chirildi: {removed}")
-        await callback.answer()
-
-    @dp.message(SurveyAnswer.answering)
-    async def collect_answer(message: Message, state: FSMContext):
-        state_data = await state.get_data()
-        answers = state_data.get("answers", [])
-        q_index = state_data.get("q_index", 0)
-        answers.append(message.text)
-        q_index += 1
-        if q_index >= len(info["questions"]):
-            uid = str(message.from_user.id)
-            info["responses_data"][uid] = answers
-            info["stats"]["responses"] += 1
-            save_data()
-            await message.answer("✅ Anketa yakunlandi! Rahmat.")
-            await state.clear()
-        else:
-            await state.update_data(answers=answers, q_index=q_index)
-            await message.answer(f"{q_index+1}) {info['questions'][q_index]}")
-
-
-# ---------- Ob-havo bot ----------
-def setup_weather_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("lookups", 0)
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_premium_system(dp, token, admin_id)
-    setup_global_buttons_handler(dp, lambda m, s: wstart(m))
-
-    def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
-        ], resize_keyboard=True)
-
-    def user_kb():
-        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🌤 Ob-havoni bilish")]], resize_keyboard=True)
-
-    async def fetch_weather(city: str):
-        url = f"https://wttr.in/{city}?format=j1"
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, headers={"User-Agent": "curl"})
-            resp.raise_for_status()
-            return resp.json()
-
-    @dp.message(Command("start"))
-    async def wstart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("🌤 <b>Ob-havo bot boshqaruvi</b>", reply_markup=admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer("🌤 Ob-havo botiga xush kelibsiz!", reply_markup=user_kb())
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def weather_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n🌤 So'rovlar: {info['stats']['lookups']}"
-        )
-
-    @dp.message(F.text == "🌤 Ob-havoni bilish")
-    async def ask_city(message: Message, state: FSMContext):
-        if not await check_active(message, info, admin_id):
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        await message.answer("Shahar nomini yozing (masalan: Tashkent):")
-        await state.set_state(WeatherCity.waiting_city)
-
-    @dp.message(WeatherCity.waiting_city)
-    async def show_weather(message: Message, state: FSMContext):
-        city = message.text.strip()
-        try:
-            d = await fetch_weather(city)
-            cur = d["current_condition"][0]
-            temp = cur["temp_C"]
-            desc = cur["weatherDesc"][0]["value"]
-            humidity = cur["humidity"]
-            wind = cur["windspeedKmph"]
-            info["stats"]["lookups"] += 1
-            save_data()
-            await message.answer(
-                f"🌤 <b>{city}</b>\n\n🌡 Harorat: {temp}°C\n☁️ Holat: {desc}\n💧 Namlik: {humidity}%\n💨 Shamol: {wind} km/soat"
-            )
-        except Exception as e:
-            logging.error(f"Xatolik: {e}")
-            await message.answer("❌ Ob-havo ma'lumotini olishda xatolik. Shahar nomini tekshirib qayta urinib ko'ring.")
-        await state.clear()
-
-
-# ---------- Nakrutka bot ----------
-def setup_nakrutka_bot(dp: Dispatcher, token: str):
-    info = data["bots"][token]
-    admin_id = info["admin_id"]
-    info["stats"].setdefault("orders", 0)
-    info.setdefault("orders", {})
-    info.setdefault("nakrutka_services", {})
-    setup_subscription_handlers(dp, token, admin_id)
-    setup_admin_management(dp, token)
-    setup_premium_system(dp, token, admin_id)
-    setup_global_buttons_handler(dp, lambda m, s: nstart(m))
-
-    def nakrutka_admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="➕ Xizmat qo'shish"), KeyboardButton(text="📋 Xizmatlar ro'yxati")],
-            [KeyboardButton(text="➖ Xizmat o'chirish")],
-            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-            [KeyboardButton(text="💎 Premium")],
-        ] + get_global_button_rows(), resize_keyboard=True)
-
-    def services_kb():
-        buttons = [
-            [InlineKeyboardButton(text=f"{s['name']} — {s['price']:,} so'm/1000ta", callback_data=f"nksvc_{sid}")]
-            for sid, s in info["nakrutka_services"].items()
-        ]
-        return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
-
-    @dp.message(Command("start"))
-    async def nstart(message: Message):
-        uid = message.from_user.id
-        if uid not in info["users"]:
-            info["users"].append(uid)
-            save_data()
-        if not await check_active(message, info, admin_id):
-            return
-        if is_admin(info, uid):
-            await message.answer("🚀 <b>Nakrutka bot boshqaruvi</b>\n\nPastdagi menyudan foydalaning 👇", reply_markup=nakrutka_admin_kb())
-            return
-        if not await require_subscription(message, info, admin_id):
-            return
-        kb = services_kb()
-        if not kb:
-            await message.answer("Hozircha xizmatlar mavjud emas.")
-        else:
-            await message.answer("🚀 <b>Xizmatlar:</b>\n\nKerakli xizmatni tanlang 👇", reply_markup=kb)
-
-    @dp.message(Command("stats"))
-    @dp.message(F.text == "📊 Statistika")
-    async def nakrutka_stats(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer(
-            f"📊 <b>Statistika</b>\n\n"
-            f"👥 Foydalanuvchilar: {len(info['users'])}\n"
-            f"🧾 Buyurtmalar: {info['stats']['orders']}"
-        )
-
-    # ---- Xizmatlar (admin) ----
-    @dp.message(F.text == "➕ Xizmat qo'shish")
-    async def nksvc_add_start(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await message.answer("Xizmat nomini kiriting:\n\n(Masalan: Telegram obunachi, Instagram like, TikTok ko'rish...)")
-        await state.set_state(NakrutkaService.waiting_name)
-
-    @dp.message(NakrutkaService.waiting_name)
-    async def nksvc_name_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        await state.update_data(nk_name=message.text.strip())
-        await message.answer("Narxini kiriting (1000 tasi uchun, so'mda, faqat raqam):")
-        await state.set_state(NakrutkaService.waiting_price)
-
-    @dp.message(NakrutkaService.waiting_price)
-    async def nksvc_price_process(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
-            return
-        try:
-            price = int(message.text.strip().replace(" ", ""))
-            if price <= 0:
-                raise ValueError
-        except ValueError:
-            await message.answer("❌ Musbat butun raqam kiriting (masalan: 15000).")
-            return
-        fsm_data = await state.get_data()
-        sid = uuid.uuid4().hex[:8]
-        info["nakrutka_services"][sid] = {"name": fsm_data.get("nk_name", "-"), "price": price}
-        save_data()
-        await message.answer(f"✅ Xizmat qo'shildi: {fsm_data.get('nk_name')} — {price:,} so'm/1000ta")
-        await state.clear()
-
-    @dp.message(F.text == "📋 Xizmatlar ro'yxati")
-    async def nksvc_list(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["nakrutka_services"]:
-            await message.answer("Xizmatlar mavjud emas.")
-        else:
-            lines = [f"• {s['name']} — {s['price']:,} so'm/1000ta" for s in info["nakrutka_services"].values()]
-            await message.answer("🚀 Xizmatlar:\n\n" + "\n".join(lines))
-
-    @dp.message(F.text == "➖ Xizmat o'chirish")
-    async def nksvc_del_start(message: Message):
-        if not is_admin(info, message.from_user.id):
-            return
-        if not info["nakrutka_services"]:
-            await message.answer("O'chirish uchun xizmat yo'q.")
-            return
-        buttons = [[InlineKeyboardButton(text=s["name"], callback_data=f"nksvcdel_{sid}")] for sid, s in info["nakrutka_services"].items()]
-        await message.answer("O'chirmoqchi bo'lgan xizmatni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-    @dp.callback_query(F.data.startswith("nksvcdel_"))
-    async def nksvc_delid_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        sid = callback.data.split("_", 1)[1]
-        removed = info["nakrutka_services"].pop(sid, None)
-        save_data()
-        if removed:
-            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
-        await callback.answer()
-
-    # ---- Buyurtma berish (mijoz) ----
-    @dp.callback_query(F.data.startswith("nksvc_"))
-    async def nksvc_chosen_cb(callback: CallbackQuery, state: FSMContext):
-        sid = callback.data.split("_", 1)[1]
-        service = info["nakrutka_services"].get(sid)
-        if not service:
-            await callback.answer("❌ Bu xizmat endi mavjud emas.", show_alert=True)
-            return
-        await state.update_data(nk_service_id=sid)
-        await callback.message.answer(f"Nechta kerak? (masalan: 1000)\n\n💰 Narx: {service['price']:,} so'm / 1000ta")
-        await state.set_state(NakrutkaOrder.waiting_qty)
-        await callback.answer()
-
-    @dp.message(NakrutkaOrder.waiting_qty)
-    async def nkorder_qty_process(message: Message, state: FSMContext):
-        try:
-            qty = int(message.text.strip().replace(" ", ""))
-            if qty <= 0:
-                raise ValueError
-        except ValueError:
-            await message.answer("❌ Musbat butun raqam kiriting (masalan: 1000).")
-            return
-        await state.update_data(nk_qty=qty)
-        await message.answer("Havolani yuboring (kanal/post/profil linki):")
-        await state.set_state(NakrutkaOrder.waiting_link)
-
-    @dp.message(NakrutkaOrder.waiting_link)
-    async def nkorder_link_process(message: Message, state: FSMContext):
-        fsm_data = await state.get_data()
-        sid = fsm_data.get("nk_service_id")
-        service = info["nakrutka_services"].get(sid)
-        if not service:
-            await message.answer("❌ Xizmat topilmadi, qaytadan /start bosing.")
-            await state.clear()
-            return
-        qty = fsm_data.get("nk_qty", 0)
-        total_price = round(service["price"] * qty / 1000)
-        await state.update_data(nk_link=message.text.strip(), nk_total=total_price)
-        if not info["payment_systems"]:
-            await message.answer("Hozircha to'lov tizimlari mavjud emas. Administratorga murojaat qiling.")
-            await state.clear()
-            return
-        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"nkpay_{pid}")] for pid, p in info["payment_systems"].items()]
-        text = (
-            f"🚀 <b>Buyurtma:</b>\n\n"
-            f"Xizmat: {service['name']}\n"
-            f"Miqdor: {qty:,} ta\n"
-            f"💰 Narx: {total_price:,} so'm\n\n"
-            "💳 To'lov tizimini tanlang:"
-        )
-        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-    @dp.callback_query(F.data.startswith("nkpay_"))
-    async def nkorder_payment_chosen_cb(callback: CallbackQuery, state: FSMContext):
-        pid = callback.data.split("_", 1)[1]
-        psys = info["payment_systems"].get(pid)
-        if not psys:
-            await callback.answer("❌ Ma'lumot topilmadi, qaytadan urinib ko'ring.", show_alert=True)
-            return
-        fsm_data = await state.get_data()
-        total_price = fsm_data.get("nk_total", 0)
-        await state.set_state(NakrutkaOrder.waiting_check)
-        text = (
-            f"💳 <b>{psys['name']}</b>\n\n"
-            f"🔢 Raqami: <code>{psys['number']}</code>\n"
-            f"👤 Egasi: {psys['owner']}\n\n"
-            f"💰 To'lov summasi: {total_price:,} so'm\n\n"
-            "To'lovni amalga oshirgach, to'lov chekini (skrinshot) shu yerga yuboring."
-        )
-        await callback.message.answer(text)
-        await callback.answer()
-
-    @dp.message(NakrutkaOrder.waiting_check, F.photo)
-    async def nkorder_check_received(message: Message, state: FSMContext):
-        fsm_data = await state.get_data()
-        sid = fsm_data.get("nk_service_id")
-        service = info["nakrutka_services"].get(sid)
-        if not service:
-            await message.answer("❌ Ma'lumot topilmadi, qaytadan /start bosing.")
-            await state.clear()
-            return
-        qty = fsm_data.get("nk_qty", 0)
-        link = fsm_data.get("nk_link", "-")
-        total_price = fsm_data.get("nk_total", 0)
-        uid = message.from_user.id
-        uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
-        order_id = uuid.uuid4().hex[:8]
-        info["orders"][order_id] = {
-            "user_id": uid, "service": service["name"], "qty": qty, "link": link,
-            "price": total_price, "status": "kutilmoqda", "created_at": datetime.now().isoformat(),
-        }
-        info["stats"]["orders"] += 1
-        save_data()
-        caption = (
-            "🧾 <b>Yangi Nakrutka buyurtmasi</b>\n\n"
-            f"🚀 Xizmat: {service['name']}\n"
-            f"🔢 Miqdor: {qty:,} ta\n"
-            f"🔗 Havola: {link}\n"
-            f"💰 Narx: {total_price:,} so'm\n"
-            f"👤 Foydalanuvchi: {uname} (ID: <code>{uid}</code>)"
-        )
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"nkapprove_{uid}_{order_id}"),
-            InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"nkreject_{uid}_{order_id}"),
-        ]])
-        for aid in info.get("admin_ids", [admin_id]):
-            try:
-                await message.bot.send_photo(chat_id=aid, photo=message.photo[-1].file_id, caption=caption, reply_markup=kb)
-            except Exception as e:
-                logging.error(f"Adminga chek yuborishda xato ({aid}): {e}")
-        await message.answer(
-            "✅ Chekingiz qabul qilindi!\n\n"
-            "Adminlar tomonidan tez orada ko'rib chiqiladi. To'lov tasdiqlansa, buyurtmangiz bajarilishni boshlaydi."
-        )
-        await state.clear()
-
-    @dp.callback_query(F.data.startswith("nkapprove_"))
-    async def nkorder_approve_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        _, target_uid, order_id = callback.data.split("_", 2)
-        order = info["orders"].get(order_id)
-        if order:
-            order["status"] = "to'landi"
-            save_data()
-        try:
-            await callback.bot.send_message(
-                chat_id=int(target_uid),
-                text="✅ <b>To'lovingiz tasdiqlandi!</b>\n\nBuyurtmangiz tez orada bajariladi. Rahmat! 🚀",
-            )
-        except Exception as e:
-            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
-        await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ <b>TASDIQLANDI</b>")
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("nkreject_"))
-    async def nkorder_reject_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        _, target_uid, order_id = callback.data.split("_", 2)
-        order = info["orders"].get(order_id)
-        if order:
-            order["status"] = "bekor qilindi"
-            save_data()
-        try:
-            await callback.bot.send_message(
-                chat_id=int(target_uid),
-                text="❌ <b>To'lovingiz admin tomonidan bekor qilindi.</b>\n\nAgar savollaringiz bo'lsa, administrator bilan bog'laning.",
-            )
-        except Exception as e:
-            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
-        await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ <b>BEKOR QILINDI</b>")
-        await callback.answer()
-
-
 # ---------- Taksi bot ----------
 def setup_taxi_bot(dp: Dispatcher, token: str):
     info = data["bots"][token]
@@ -3923,13 +3173,8 @@ SETUP_FUNCTIONS = {
     "kino": setup_kino_bot,
     "shop": setup_shop_bot,
     "ai": setup_ai_bot,
-    "post": setup_post_bot,
     "money": setup_money_bot,
     "translate": setup_translate_bot,
-    "contact": setup_contact_bot,
-    "survey": setup_survey_bot,
-    "weather": setup_weather_bot,
-    "nakrutka": setup_nakrutka_bot,
     "taxi": setup_taxi_bot,
 }
 
@@ -4009,7 +3254,347 @@ async def trial_warning_loop():
         await asyncio.sleep(6 * 60 * 60)  # 6 soat
 
 
+MINIAPP_HTML = """<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Bot Creator</title>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    --text: var(--tg-theme-text-color, #1c1c1e);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --line: color-mix(in srgb, var(--hint) 22%, transparent);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  .wrap {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px 16px 32px;
+  }
+  .hero {
+    text-align: center;
+    padding: 12px 0 22px;
+    opacity: 0;
+    animation: rise .5s ease forwards;
+  }
+  .hero-badge {
+    width: 64px; height: 64px;
+    margin: 0 auto 14px;
+    border-radius: 18px;
+    background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #7b2ff7));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+    box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  .hero h1 {
+    font-size: 21px;
+    font-weight: 700;
+    margin: 0 0 4px;
+    letter-spacing: -0.01em;
+  }
+  .hero p {
+    font-size: 13.5px;
+    color: var(--hint);
+    margin: 0;
+  }
+  .balance-card {
+    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #7b2ff7));
+    color: var(--accent-text);
+    border-radius: 18px;
+    padding: 18px 20px;
+    margin-bottom: 22px;
+    opacity: 0;
+    animation: rise .5s ease .08s forwards;
+  }
+  .balance-card .label {
+    font-size: 12.5px;
+    opacity: .85;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin-bottom: 6px;
+  }
+  .balance-card .amount {
+    font-size: 28px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .section-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--hint);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin: 0 4px 8px;
+  }
+  .bot-list {
+    background: var(--bg2);
+    border-radius: 16px;
+    overflow: hidden;
+    opacity: 0;
+    animation: rise .5s ease .16s forwards;
+  }
+  .bot-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 14px;
+    border-bottom: 1px solid var(--line);
+    text-decoration: none;
+    color: inherit;
+  }
+  .bot-row:last-child { border-bottom: none; }
+  .avatar {
+    flex-shrink: 0;
+    width: 42px; height: 42px;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    color: #fff;
+    font-weight: 600;
+  }
+  .bot-meta { flex: 1; min-width: 0; }
+  .bot-name {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bot-sub {
+    font-size: 12.5px;
+    color: var(--hint);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pill {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .pill.on { background: color-mix(in srgb, #34c759 18%, transparent); color: #248a3d; }
+  .pill.off { background: color-mix(in srgb, #ff3b30 16%, transparent); color: #d70015; }
+  .empty {
+    text-align: center;
+    padding: 46px 20px;
+    color: var(--hint);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .empty .emoji { font-size: 34px; margin-bottom: 10px; display: block; }
+  .state-msg {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--hint);
+    font-size: 14px;
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero, .balance-card, .bot-list { animation: none !important; opacity: 1 !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div class="hero-badge">🤖</div>
+      <h1>Bot Creator</h1>
+      <p>Botlaringiz va balansingiz — bir joyda</p>
+    </div>
+
+    <div id="content">
+      <div class="state-msg">Yuklanmoqda…</div>
+    </div>
+  </div>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+  const tg = window.Telegram?.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  const TYPE_COLORS = {
+    "kino": "#7b5cff", "shop": "#12b886", "ai": "#2481cc",
+    "money": "#20c997", "translate": "#5e60ce", "taxi": "#ffcc00",
+  };
+
+  function fmt(n) {
+    return Number(n || 0).toLocaleString("ru-RU").replace(/,/g, " ");
+  }
+
+  function initials(name) {
+    return (name || "?").trim().slice(0, 1).toUpperCase();
+  }
+
+  async function load() {
+    const content = document.getElementById("content");
+    const initData = tg?.initData || "";
+
+    if (!initData) {
+      content.innerHTML = '<div class="state-msg">Bu sahifa faqat Telegram ichida ishlaydi.</div>';
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/mybots?" + new URLSearchParams({ initData }));
+      if (!res.ok) throw new Error("bad response");
+      const data = await res.json();
+
+      let html = "";
+      html += '<div class="balance-card"><div class="label">Balans</div><div class="amount">' + fmt(data.balance) + " so'm</div></div>";
+      html += '<div class="section-label">Botlarim (' + data.bots.length + ')</div>';
+
+      if (data.bots.length === 0) {
+        html += '<div class="bot-list"><div class="empty"><span class="emoji">📭</span>Hali botingiz yo\'q.<br>Bot yaratish uchun bosh menyudan "🤖 Bot yaratish" tugmasini bosing.</div></div>';
+      } else {
+        html += '<div class="bot-list">';
+        for (const b of data.bots) {
+          const color = TYPE_COLORS[b.type_key] || "#8e8e93";
+          const pillClass = b.active ? "on" : "off";
+          const pillText = b.active ? "Faol" : "To'xtagan";
+          html += '<div class="bot-row">' +
+            '<div class="avatar" style="background:' + color + '">' + initials(b.name) + '</div>' +
+            '<div class="bot-meta">' +
+              '<div class="bot-name">' + escapeHtml(b.name) + '</div>' +
+              '<div class="bot-sub mono">' + escapeHtml(b.type) + ' · ' + escapeHtml(b.tariff) + '</div>' +
+            '</div>' +
+            '<div class="pill ' + pillClass + '">' + pillText + '</div>' +
+          '</div>';
+        }
+        html += '</div>';
+      }
+
+      content.innerHTML = html;
+    } catch (e) {
+      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi. Birozdan so\'ng qayta urinib ko\'ring.</div>';
+    }
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  load();
+</script>
+</body>
+</html>
+"""
+
+
+# ---------- Telegram Mini App (BotFather'dagi kabi "Botlarim" veb-sahifasi) ----------
+def validate_webapp_init_data(init_data: str, bot_token: str):
+    """Telegram WebApp initData imzosini tekshiradi. To'g'ri bo'lsa, parslangan dict qaytaradi."""
+    try:
+        parsed = dict(parse_qsl(init_data, strict_parsing=True))
+        received_hash = parsed.pop("hash", None)
+        if not received_hash:
+            return None
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
+        secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+        computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(computed_hash, received_hash):
+            return None
+        return parsed
+    except Exception:
+        return None
+
+
+async def miniapp_page(request):
+    return web.Response(text=MINIAPP_HTML, content_type="text/html")
+
+
+async def api_mybots(request):
+    init_data = request.query.get("initData", "")
+    parsed = validate_webapp_init_data(init_data, MAIN_BOT_TOKEN)
+    if not parsed:
+        return web.json_response({"error": "invalid_init_data"}, status=401)
+    try:
+        user = json.loads(parsed.get("user", "{}"))
+        uid = user.get("id")
+    except Exception:
+        uid = None
+    if not uid:
+        return web.json_response({"error": "no_user"}, status=400)
+
+    bots_list = []
+    for token, info in data["bots"].items():
+        if uid in info.get("admin_ids", [info["admin_id"]]):
+            tariff = get_bot_tariff(info)
+            bots_list.append({
+                "name": info["name"],
+                "type": BOT_TYPES.get(info["type"], info["type"]),
+                "type_key": info["type"],
+                "active": is_active(info),
+                "tariff": tariff["name"],
+            })
+    balance = data["user_balances"].get(str(uid), 0)
+    return web.json_response({"bots": bots_list, "balance": balance})
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/miniapp", miniapp_page)
+    app.router.add_get("/api/mybots", api_mybots)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Mini App veb-server {port}-portda ishga tushdi")
+
+
+def get_miniapp_url() -> str:
+    explicit = os.getenv("MINIAPP_URL")
+    if explicit:
+        return explicit.rstrip("/") + "/miniapp"
+    domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    if domain:
+        return f"https://{domain}/miniapp"
+    return ""
+
+
 async def main():
+    asyncio.create_task(start_web_server())
+
+    miniapp_url = get_miniapp_url()
+    if miniapp_url:
+        try:
+            await main_bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Botlarim", web_app=WebAppInfo(url=miniapp_url))
+            )
+            logging.info(f"Mini App menyu tugmasi sozlandi: {miniapp_url}")
+        except Exception as e:
+            logging.error(f"Mini App menyu tugmasini sozlashda xato: {e}")
+    else:
+        logging.warning(
+            "MINIAPP_URL yoki RAILWAY_PUBLIC_DOMAIN topilmadi — Mini App menyu tugmasi sozlanmadi. "
+            "Railway'da domen generatsiya qiling yoki MINIAPP_URL o'zgaruvchisini qo'ying."
+        )
+
     for token, info in data["bots"].items():
         info.setdefault("stats", {})
         await start_child_bot(token, info["type"])
