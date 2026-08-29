@@ -886,7 +886,14 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(F.text == "🌐 Saytga kirish")
     async def website_handler(message: Message):
-        await message.answer("🌐 Bu funksiya hozircha ishlab chiqilmoqda. Tez orada qo'shiladi!")
+        miniapp_url = get_miniapp_url()
+        if not miniapp_url:
+            await message.answer("🌐 Sayt hozircha sozlanmagan. Birozdan so'ng qayta urinib ko'ring.")
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Saytni ochish", web_app=WebAppInfo(url=miniapp_url))]
+        ])
+        await message.answer("Botlaringiz va balansingizni ko'rish uchun quyidagi tugmani bosing 👇", reply_markup=kb)
 
     @dp.message(F.text == "🎁 Referal")
     async def referral_handler(message: Message):
