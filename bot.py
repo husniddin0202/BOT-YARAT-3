@@ -13,7 +13,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from io import BytesIO
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, MenuButtonWebApp, WebAppInfo
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, MenuButtonWebApp, WebAppInfo, LabeledPrice, PreCheckoutQuery
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.fsm.context import FSMContext
@@ -136,6 +136,12 @@ for _key, _val in DEFAULT_PRICES.items():
 # Platformaning Hisob to'ldirish (balans) tizimi
 data.setdefault("user_balances", {})     # {str(uid): so'm}
 data.setdefault("payment_systems", {})   # {psid: {"name","number","owner"}} — Hisob to'ldirish uchun
+data.setdefault("stars_rate", 250)       # 1 ⭐ Stars narxi (so'mda, admin sozlashi mumkin — taxminiy boshlang'ich qiymat)
+
+
+def somz_to_stars(somz: int) -> int:
+    rate = data.get("stars_rate", 250)
+    return max(1, round(somz / rate))
 
 # Har bir bot uchun 3 xil oylik tarif (narx + kunlik foydalanuvchi limiti)
 data.setdefault("tariffs", {tid: dict(t) for tid, t in DEFAULT_TARIFFS.items()})
@@ -276,6 +282,10 @@ class EditPrice(StatesGroup):
 
 class EditRate(StatesGroup):
     waiting_percent = State()
+
+
+class EditStarsRate(StatesGroup):
+    waiting_rate = State()
 
 
 class ActivateFlow(StatesGroup):
@@ -778,6 +788,7 @@ def setup_platform_bot(dp: Dispatcher):
         if uid == ADMIN_ID:
             keyboard.append([KeyboardButton(text="📊 Statistika"), KeyboardButton(text="➕ Hisob qo'shish")])
             keyboard.append([KeyboardButton(text="💵 Tariflar"), KeyboardButton(text="💳 To'lov tizimlar")])
+            keyboard.append([KeyboardButton(text="⭐ Stars kursi")])
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @dp.message(Command("start"))
@@ -959,15 +970,46 @@ def setup_platform_bot(dp: Dispatcher):
         if amount < MIN_TOPUP or amount > MAX_TOPUP:
             await message.answer(f"❌ Summa {MIN_TOPUP:,} so'mdan {MAX_TOPUP:,} so'mgacha bo'lishi kerak.")
             return
-        if not data["payment_systems"]:
-            await message.answer("Hozircha to'lov tizimlari mavjud emas. Administratorga murojaat qiling.")
-            await state.clear()
-            return
         await state.update_data(topup_amount=amount)
-        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"topuppay_{pid}")] for pid, p in data["payment_systems"].items()]
+        stars = somz_to_stars(amount)
+        buttons = [[InlineKeyboardButton(text=f"⭐ {stars} Stars orqali to'lash", callback_data=f"topupstars_{amount}")]]
+        buttons += [[InlineKeyboardButton(text=p["name"], callback_data=f"topuppay_{pid}")] for pid, p in data["payment_systems"].items()]
         await message.answer(
-            f"💰 Summa: {amount:,} so'm\n\n💳 To'lov tizimini tanlang:",
+            f"💰 Summa: {amount:,} so'm (~{stars} ⭐)\n\n💳 To'lov tizimini tanlang:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+
+    @dp.callback_query(F.data.startswith("topupstars_"))
+    async def topup_stars_cb(callback: CallbackQuery):
+        amount = int(callback.data.split("_", 1)[1])
+        stars = somz_to_stars(amount)
+        await callback.bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title="💰 Hisobni to'ldirish",
+            description=f"Balansga {amount:,} so'm qo'shish",
+            payload=f"topup_{amount}",
+            currency="XTR",
+            prices=[LabeledPrice(label="Hisob to'ldirish", amount=stars)],
+        )
+        await callback.answer()
+
+    @dp.pre_checkout_query()
+    async def platform_stars_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+        await pre_checkout_query.answer(ok=True)
+
+    @dp.message(F.successful_payment)
+    async def platform_stars_payment_success(message: Message):
+        payload = message.successful_payment.invoice_payload
+        if not payload.startswith("topup_"):
+            return
+        amount = int(payload.split("_", 1)[1])
+        key = str(message.from_user.id)
+        data["user_balances"][key] = data["user_balances"].get(key, 0) + amount
+        save_data()
+        await message.answer(
+            f"✅ <b>To'lov muvaffaqiyatli qabul qilindi!</b>\n\n"
+            f"Hisobingizga {amount:,} so'm qo'shildi.\n"
+            f"💰 Joriy balans: {data['user_balances'][key]:,} so'm"
         )
 
     @dp.callback_query(F.data.startswith("topuppay_"))
@@ -1266,6 +1308,33 @@ def setup_platform_bot(dp: Dispatcher):
             for tid, t in data["tariffs"].items()
         ]
         await message.answer("💰 <b>Tariflarni boshqarish</b>\n\nNarxini o'zgartirish uchun tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.message(F.text == "⭐ Stars kursi")
+    async def stars_rate_start(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        rate = data.get("stars_rate", 250)
+        await message.answer(
+            f"⭐ <b>Stars kursi</b>\n\nHozirgi kurs: 1 ⭐ = {rate:,} so'm\n\n"
+            "Yangi kursni kiriting (so'mda, faqat raqam):"
+        )
+        await state.set_state(EditStarsRate.waiting_rate)
+
+    @dp.message(EditStarsRate.waiting_rate)
+    async def stars_rate_save(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        try:
+            rate = int(message.text.strip().replace(" ", ""))
+            if rate <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting (masalan: 250).")
+            return
+        data["stars_rate"] = rate
+        save_data()
+        await message.answer(f"✅ Stars kursi endi: 1 ⭐ = {rate:,} so'm")
+        await state.clear()
 
     @dp.callback_query(F.data.startswith("edittariff_"))
     async def edittariff_cb(callback: CallbackQuery, state: FSMContext):
@@ -1836,10 +1905,9 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
         if not tariff:
             await callback.answer("❌ Bu tarif endi mavjud emas.", show_alert=True)
             return
-        if not info["payment_systems"]:
-            await callback.answer("Hozircha to'lov tizimlari mavjud emas. Administratorga murojaat qiling.", show_alert=True)
-            return
-        buttons = [
+        stars = somz_to_stars(tariff["price"])
+        buttons = [[InlineKeyboardButton(text=f"⭐ {stars} Stars orqali to'lash", callback_data=f"premstars_{tid}")]]
+        buttons += [
             [InlineKeyboardButton(text=p["name"], callback_data=f"prempay_{tid}_{pid}")]
             for pid, p in info["payment_systems"].items()
         ]
@@ -1848,9 +1916,27 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             "💳 <b>To'lov tizimini tanlang</b>\n\n"
             f"💎 Tarif: {tariff['name']}\n"
             f"📆 Muddat: {tariff['days']} kun\n"
-            f"💰 Narx: {tariff['price']:,} so'm"
+            f"💰 Narx: {tariff['price']:,} so'm (~{stars} ⭐)"
         )
         await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("premstars_"))
+    async def premium_stars_cb(callback: CallbackQuery):
+        tid = callback.data.split("_", 1)[1]
+        tariff = info["premium_tariffs"].get(tid)
+        if not tariff:
+            await callback.answer("❌ Bu tarif endi mavjud emas.", show_alert=True)
+            return
+        stars = somz_to_stars(tariff["price"])
+        await callback.bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"💎 Premium — {tariff['name']}",
+            description=f"{tariff['days']} kunlik Premium obuna",
+            payload=f"premium_{tid}",
+            currency="XTR",
+            prices=[LabeledPrice(label=tariff["name"], amount=stars)],
+        )
         await callback.answer()
 
     @dp.callback_query(F.data.startswith("prempay_"))
@@ -1954,6 +2040,31 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             logging.error(f"Foydalanuvchiga rad javobini yuborishda xato: {e}")
         await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ <b>BEKOR QILINDI</b>")
         await callback.answer()
+
+    # ---------- Telegram Stars orqali to'lov ----------
+    @dp.pre_checkout_query()
+    async def stars_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+        await pre_checkout_query.answer(ok=True)
+
+    @dp.message(F.successful_payment)
+    async def stars_payment_success(message: Message):
+        payload = message.successful_payment.invoice_payload
+        if not payload.startswith("premium_"):
+            return
+        tid = payload.split("_", 1)[1]
+        tariff = info["premium_tariffs"].get(tid)
+        if not tariff:
+            await message.answer("❌ Xatolik: tarif topilmadi. Administratorga murojaat qiling.")
+            return
+        until = datetime.now() + timedelta(days=tariff["days"])
+        info["premium_users"][str(message.from_user.id)] = {"until": until.isoformat()}
+        save_data()
+        await message.answer(
+            "✅ <b>To'lov muvaffaqiyatli qabul qilindi!</b>\n\n"
+            f"Sizga {tariff['days']} kunlik Premium obuna berildi. "
+            f"Amal qilish muddati: {until.strftime('%d.%m.%Y')} gacha.\n\n"
+            "Endi cheklovlarsiz foydalanishingiz mumkin! 🎉"
+        )
 
 
 
@@ -2605,21 +2716,25 @@ def validate_webapp_init_data(init_data: str, bot_token: str):
 
 
 async def miniapp_page(request):
-    return web.Response(text=MINIAPP_HTML, content_type="text/html")
+    return web.Response(
+        text=MINIAPP_HTML,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
 
 
 async def api_mybots(request):
     init_data = request.query.get("initData", "")
     parsed = validate_webapp_init_data(init_data, MAIN_BOT_TOKEN)
     if not parsed:
-        return web.json_response({"error": "invalid_init_data"}, status=401)
+        return web.json_response({"error": "invalid_init_data"}, status=401, headers={"Cache-Control": "no-store"})
     try:
         user = json.loads(parsed.get("user", "{}"))
         uid = user.get("id")
     except Exception:
         uid = None
     if not uid:
-        return web.json_response({"error": "no_user"}, status=400)
+        return web.json_response({"error": "no_user"}, status=400, headers={"Cache-Control": "no-store"})
 
     bots_list = []
     for token, info in data["bots"].items():
@@ -2633,7 +2748,7 @@ async def api_mybots(request):
                 "tariff": tariff["name"],
             })
     balance = data["user_balances"].get(str(uid), 0)
-    return web.json_response({"bots": bots_list, "balance": balance})
+    return web.json_response({"bots": bots_list, "balance": balance}, headers={"Cache-Control": "no-store"})
 
 
 async def start_web_server():
