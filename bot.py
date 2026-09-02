@@ -42,10 +42,22 @@ main_dp = Dispatcher(storage=MemoryStorage())
 
 BOT_TYPES = {
     "kino": "🎬 Kino bot",
+    "shop": "🛒 Savdo bot",
+    "ai": "🤖 AI-yordamchi bot",
+    "money": "💱 Pul (valyuta) bot",
+    "translate": "🌐 Tarjimon bot",
+    "taxi": "🚕 Taksi bot",
+    "stars": "⭐ Stars sotish bot",
 }
 
 DEFAULT_PRICES = {
     "kino": 120_000,
+    "ai": 120_000,
+    "shop": 120_000,
+    "money": 120_000,
+    "translate": 120_000,
+    "taxi": 120_000,
+    "stars": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
@@ -204,6 +216,38 @@ BOT_DESCRIPTIONS = {
         "taqdim etadi.\n\n"
         "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
     ),
+    "shop": (
+        "<i>Ushbu bot orqali siz mahsulotlaringizni ro'yxatga olib, mijozlaringizga "
+        "onlayn savdo qilishingiz mumkin.</i>\n\n"
+        "🛍 Mijozlar mahsulotlarni ko'rib, savatchaga qo'shib, buyurtma berishlari mumkin.\n\n"
+        "📊 Buyurtmalar va statistikani kuzatib borish, majburiy obuna qo'shish imkoniyati bor.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "ai": (
+        "<i>Foydalanuvchilar bilan sun'iy intellekt orqali suhbatlashadigan bot. "
+        "Har qanday savolga tezkor va aqlli javob beradi.</i>\n\n"
+        "🤖 Cheksiz mavzularda savol-javob, matnli yordam va maslahatlar.\n\n"
+        "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "money": (
+        "<i>Joriy valyuta kurslarini ko'rsatadigan bot.</i>\n\n"
+        "💱 Dollar, Yevro va boshqa valyutalarning kursini bir zumda ko'rsatadi.\n\n"
+        "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "translate": (
+        "<i>Matnlarni turli tillarga tarjima qiladigan bot.</i>\n\n"
+        "🌐 Foydalanuvchi matn yuboradi — bot kerakli tilga tezkor tarjima qiladi.\n\n"
+        "📊 Foydalanuvchilar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "taxi": (
+        "<i>Mijozlar manzil va telefon raqamini yuborib, taksi chaqiradigan bot.</i>\n\n"
+        "🚕 Buyurtma to'g'ridan-to'g'ri sizga (yoki haydovchilaringizga) yuboriladi.\n\n"
+        "📊 Buyurtmalar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
 }
 
 def is_active(info: dict) -> bool:
@@ -348,6 +392,74 @@ MAX_TOPUP = 150_000
 
 
 class AddAdmin(StatesGroup):
+    waiting_id = State()
+
+
+class AddProduct(StatesGroup):
+    waiting_name = State()
+    waiting_price = State()
+
+
+class Checkout(StatesGroup):
+    waiting_address = State()
+    waiting_phone = State()
+
+
+class CurrencyAdd(StatesGroup):
+    waiting_code = State()
+    waiting_rate = State()
+
+
+class CurrencyUpdate(StatesGroup):
+    waiting_rate = State()
+
+
+class MoneyAmount(StatesGroup):
+    waiting_amount = State()
+
+
+class PostFlow(StatesGroup):
+    waiting_text = State()
+    waiting_confirm = State()
+
+
+class TaxiOrder(StatesGroup):
+    waiting_from = State()
+    waiting_to = State()
+    waiting_phone = State()
+
+
+class StarPackageAdd(StatesGroup):
+    waiting_stars = State()
+    waiting_price = State()
+
+
+class StarPackageEdit(StatesGroup):
+    waiting_price = State()
+
+
+class StarOrderCustom(StatesGroup):
+    waiting_amount = State()
+
+
+class StarOrderCheck(StatesGroup):
+    waiting_check = State()
+
+
+class StarSettings(StatesGroup):
+    waiting_min = State()
+    waiting_max = State()
+
+
+class StarUserSearch(StatesGroup):
+    waiting_query = State()
+
+
+class StarBlockUser(StatesGroup):
+    waiting_id = State()
+
+
+class StarUnblockUser(StatesGroup):
     waiting_id = State()
 
 
@@ -2319,8 +2431,918 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
 
 
+def setup_shop_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    info["stats"].setdefault("orders", 0)
+    info["stats"].setdefault("revenue", 0)
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: sstart(m))
+
+    def admin_kb():
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Mahsulot qo'shish", callback_data="padd")],
+            [InlineKeyboardButton(text="📦 Mahsulotlar ro'yxati", callback_data="plist")],
+            [InlineKeyboardButton(text="➖ Mahsulotni o'chirish", callback_data="pdel")],
+        ])
+
+    def catalog_kb():
+        buttons = []
+        sorted_products = sorted(info["products"].items(), key=lambda item: item[1]["name"].lower())
+        for pid, p in sorted_products:
+            if p["qty"] > 0:
+                buttons.append([InlineKeyboardButton(text=f"{p['name']} — {p['price']:,} so'm", callback_data=f"buy_{pid}")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+
+    def main_menu_kb():
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="🛍 Mahsulotlar"), KeyboardButton(text="🛒 Savatim")],
+                [KeyboardButton(text="📜 Buyurtmalarim")],
+            ],
+            resize_keyboard=True,
+        )
+
+    async def send_cart(user_id: int, send_func):
+        uid = str(user_id)
+        cart = info["carts"].get(uid, {})
+        if not cart:
+            await send_func("🛒 Savatingiz bo'sh.")
+            return
+        lines = []
+        total = 0
+        for pid, qty in cart.items():
+            p = info["products"].get(pid)
+            if not p:
+                continue
+            subtotal = p["price"] * qty
+            total += subtotal
+            lines.append(f"{p['name']} x{qty} = {subtotal:,} so'm")
+        text = "🛒 <b>Savatingiz:</b>\n\n" + "\n".join(lines) + f"\n\n💰 Jami: {total:,} so'm"
+        buttons = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Buyurtma berish", callback_data="checkout")],
+            [InlineKeyboardButton(text="🗑 Tozalash", callback_data="cart_clear")],
+        ])
+        await send_func(text, reply_markup=buttons)
+
+    def shop_admin_menu_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    @dp.message(Command("start"))
+    async def sstart(message: Message):
+        uid = message.from_user.id
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            await message.answer("🛒 <b>Savdo bot boshqaruvi</b>", reply_markup=admin_kb())
+            await message.answer("Qo'shimcha bo'limlar 👇", reply_markup=shop_admin_menu_kb())
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+
+        if not info["products"]:
+            await message.answer("Hozircha mahsulotlar yo'q.", reply_markup=main_menu_kb())
+        else:
+            kb = catalog_kb()
+            await message.answer("🛍 Mahsulotlar:", reply_markup=kb)
+            await message.answer("Pastdagi menyudan foydalaning 👇", reply_markup=main_menu_kb())
+
+    @dp.message(F.text == "🛍 Mahsulotlar")
+    async def show_catalog(message: Message):
+        if not await check_active(message, info, admin_id):
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        kb = catalog_kb()
+        if not kb:
+            await message.answer("Hozircha mahsulotlar yo'q.")
+        else:
+            await message.answer("🛍 Mahsulotlar:", reply_markup=kb)
+
+    @dp.message(F.text == "🛒 Savatim")
+    async def show_cart_menu(message: Message):
+        await send_cart(message.from_user.id, message.answer)
+
+    @dp.message(Command("stats"))
+    @dp.message(F.text == "📊 Statistika")
+    async def shop_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(
+            f"📊 <b>Statistika</b>\n\n"
+            f"👥 Foydalanuvchilar: {len(info['users'])}\n"
+            f"🧾 Buyurtmalar: {info['stats']['orders']}\n"
+            f"💰 Jami tushum: {info['stats']['revenue']:,} so'm"
+        )
+
+    @dp.callback_query(F.data == "padd")
+    async def padd_cb(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            return
+        await callback.message.answer("Mahsulot nomini yozing:")
+        await state.set_state(AddProduct.waiting_name)
+        await callback.answer()
+
+    @dp.message(AddProduct.waiting_name)
+    async def padd_name(message: Message, state: FSMContext):
+        await state.update_data(name=message.text.strip())
+        await message.answer("Narxini yozing (faqat raqam, so'mda):")
+        await state.set_state(AddProduct.waiting_price)
+
+    @dp.message(AddProduct.waiting_price)
+    async def padd_price(message: Message, state: FSMContext):
+        try:
+            price = int(message.text.strip().replace(" ", ""))
+        except ValueError:
+            await message.answer("❌ Faqat raqam kiriting.")
+            return
+        state_data = await state.get_data()
+        pid = str(info["next_id"])
+        info["next_id"] += 1
+        info["products"][pid] = {"name": state_data["name"], "price": price, "qty": 999999}
+        save_data()
+        await message.answer(f"✅ Qo'shildi: {state_data['name']} — {price:,} so'm")
+        await state.clear()
+
+        # Mavjud xaridorlarga yangilangan katalogni tabiiy ko'rinishda yuborish
+        for uid in info["users"]:
+            if is_admin(info, uid):
+                continue
+            try:
+                kb = catalog_kb()
+                if kb:
+                    await message.bot.send_message(uid, "🛍 Mahsulotlar:", reply_markup=kb)
+            except Exception:
+                pass
+
+    @dp.callback_query(F.data == "plist")
+    async def plist_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        if not info["products"]:
+            await callback.message.answer("Mahsulotlar yo'q.")
+        else:
+            sorted_products = sorted(info["products"].items(), key=lambda item: item[1]["name"].lower())
+            text = "📦 <b>Mahsulotlar (alifbo tartibida):</b>\n\n" + "\n".join(
+                f"#{pid}: {p['name']} — {p['price']:,} so'm ({p['qty']} dona)" for pid, p in sorted_products
+            )
+            await callback.message.answer(text)
+        await callback.answer()
+
+    @dp.callback_query(F.data == "pdel")
+    async def pdel_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        if not info["products"]:
+            await callback.message.answer("O'chirish uchun mahsulot yo'q.")
+            await callback.answer()
+            return
+        sorted_products = sorted(info["products"].items(), key=lambda item: item[1]["name"].lower())
+        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"pdelid_{pid}")] for pid, p in sorted_products]
+        await callback.message.answer("O'chirmoqchi bo'lgan mahsulotni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("pdelid_"))
+    async def pdelid_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        pid = callback.data.split("_", 1)[1]
+        removed = info["products"].pop(pid, None)
+        save_data()
+        if removed:
+            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("buy_"))
+    async def buy_cb(callback: CallbackQuery):
+        if not await check_active(callback, info, admin_id):
+            return
+        if not await require_subscription(callback, info, admin_id):
+            return
+        pid = callback.data.split("_", 1)[1]
+        uid = str(callback.from_user.id)
+        product = info["products"].get(pid)
+        if not product or product["qty"] <= 0:
+            await callback.answer("❌ Mahsulot tugagan.", show_alert=True)
+            return
+        cart = info["carts"].setdefault(uid, {})
+        cart[pid] = cart.get(pid, 0) + 1
+        save_data()
+        total = sum(info["products"][p]["price"] * q for p, q in cart.items() if p in info["products"])
+        await callback.answer(f"✅ Qo'shildi! Savat: {total:,} so'm")
+
+    @dp.callback_query(F.data == "cart")
+    async def cart_cb(callback: CallbackQuery):
+        await send_cart(callback.from_user.id, callback.message.answer)
+        await callback.answer()
+
+    @dp.callback_query(F.data == "cart_clear")
+    async def cart_clear_cb(callback: CallbackQuery):
+        uid = str(callback.from_user.id)
+        info["carts"][uid] = {}
+        save_data()
+        await callback.message.answer("🗑 Savat tozalandi.")
+        await callback.answer()
+
+    def location_kb():
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📍 Joylashuvni yuborish", request_location=True)]],
+            resize_keyboard=True, one_time_keyboard=True,
+        )
+
+    def contact_kb():
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📞 Raqamni yuborish", request_contact=True)]],
+            resize_keyboard=True, one_time_keyboard=True,
+        )
+
+    @dp.callback_query(F.data == "checkout")
+    async def checkout_cb(callback: CallbackQuery, state: FSMContext):
+        uid = str(callback.from_user.id)
+        cart = info["carts"].get(uid, {})
+        if not cart:
+            await callback.answer("Savat bo'sh.", show_alert=True)
+            return
+        await callback.message.answer(
+            "📍 Yetkazib berish manzilini yuboring — pastdagi tugma orqali joylashuvingizni ulashing:",
+            reply_markup=location_kb(),
+        )
+        await state.set_state(Checkout.waiting_address)
+        await callback.answer()
+
+    @dp.message(Checkout.waiting_address, F.location)
+    async def checkout_address_location(message: Message, state: FSMContext):
+        lat, lon = message.location.latitude, message.location.longitude
+        address = f"https://maps.google.com/?q={lat},{lon}"
+        await state.update_data(address=address)
+        await message.answer("📞 Endi telefon raqamingizni yuboring:", reply_markup=contact_kb())
+        await state.set_state(Checkout.waiting_phone)
+
+    @dp.message(Checkout.waiting_address)
+    async def checkout_address_text(message: Message, state: FSMContext):
+        await state.update_data(address=message.text.strip())
+        await message.answer("📞 Endi telefon raqamingizni yuboring:", reply_markup=contact_kb())
+        await state.set_state(Checkout.waiting_phone)
+
+    @dp.message(Checkout.waiting_phone, F.contact)
+    async def checkout_phone_contact(message: Message, state: FSMContext):
+        await finalize_order(message, state, message.contact.phone_number)
+
+    @dp.message(Checkout.waiting_phone)
+    async def checkout_phone_text(message: Message, state: FSMContext):
+        await finalize_order(message, state, message.text.strip())
+
+    async def finalize_order(message: Message, state: FSMContext, phone: str):
+        state_data = await state.get_data()
+        address = state_data.get("address", "-")
+
+        uid = str(message.from_user.id)
+        cart = info["carts"].get(uid, {})
+        lines = []
+        total = 0
+        for pid, qty in cart.items():
+            p = info["products"].get(pid)
+            if not p:
+                continue
+            subtotal = p["price"] * qty
+            total += subtotal
+            lines.append(f"{p['name']} x{qty} = {subtotal:,} so'm")
+            p["qty"] = max(0, p["qty"] - qty)
+
+        username = message.from_user.username or message.from_user.id
+        order_text = (
+            f"🛒 <b>Yangi buyurtma!</b>\n"
+            f"Xaridor: @{username}\n"
+            f"📍 Manzil: {address}\n"
+            f"📞 Telefon: {phone}\n\n"
+            + "\n".join(lines)
+            + f"\n\n💰 Jami: {total:,} so'm"
+        )
+        await message.bot.send_message(admin_id, order_text)
+
+        info["carts"][uid] = {}
+        info["stats"]["orders"] += 1
+        info["stats"]["revenue"] += total
+        info.setdefault("order_history", {})
+        info["order_history"].setdefault(uid, []).append({
+            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "lines": lines,
+            "total": total,
+            "address": address,
+            "phone": phone,
+        })
+        save_data()
+
+        await message.answer("✅ Buyurtmangiz qabul qilindi! Tez orada siz bilan bog'lanishadi.", reply_markup=ReplyKeyboardRemove())
+        await state.clear()
+
+    @dp.message(F.text == "📜 Buyurtmalarim")
+    async def my_orders(message: Message):
+        uid = str(message.from_user.id)
+        orders = info.get("order_history", {}).get(uid, [])
+        if not orders:
+            await message.answer("Sizda hali buyurtmalar yo'q.")
+            return
+        text = "📜 <b>Buyurtmalarim:</b>\n\n"
+        for o in orders[-10:]:
+            text += f"🗓 {o['date']}\n" + "\n".join(o["lines"]) + f"\n💰 Jami: {o['total']:,} so'm\n\n"
+        await message.answer(text)
+
+
+# ---------- AI-yordamchi bot ----------
+
+
+def setup_ai_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    info["stats"].setdefault("questions", 0)
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: astart(m))
+
+    def ai_admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="🔄 Yangi suhbat"), KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="📢 Xabar yuborish")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def ai_user_kb():
+        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔄 Yangi suhbat")]] + get_global_button_rows(), resize_keyboard=True)
+
+    @dp.message(Command("start"))
+    async def astart(message: Message):
+        uid = message.from_user.id
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            await message.answer(
+                "🤖 Salom! Pastdagi menyudan foydalaning 👇\nSavol yozsangiz ham javob beraman.",
+                reply_markup=ai_admin_kb(),
+            )
+        else:
+            await message.answer(
+                "🤖 Salom! Menga istalgan savolni yozing, sun'iy intellekt sifatida javob beraman.",
+                reply_markup=ai_user_kb(),
+            )
+
+    @dp.message(Command("stats"))
+    @dp.message(F.text == "📊 Statistika")
+    async def ai_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(
+            f"📊 <b>Statistika</b>\n\n"
+            f"👥 Foydalanuvchilar: {len(info['users'])}\n"
+            f"❓ Savollar soni: {info['stats']['questions']}"
+        )
+
+    @dp.message(F.text == "🔄 Yangi suhbat")
+    async def reset_chat(message: Message):
+        info.setdefault("ai_history", {})
+        info["ai_history"][str(message.from_user.id)] = []
+        save_data()
+        await message.answer("🔄 Suhbat tarixi tozalandi. Yangi savol yozing.")
+
+    @dp.message(F.text == "📢 Xabar yuborish")
+    async def ai_newpost_cb(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("E'lon matnini yuboring:")
+        await state.set_state(PostFlow.waiting_text)
+
+    @dp.message(PostFlow.waiting_text)
+    async def ai_post_text(message: Message, state: FSMContext):
+        await state.update_data(text=message.text)
+        buttons = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Yuborish", callback_data="ai_post_confirm")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="ai_post_cancel")],
+        ])
+        await message.answer(
+            f"Quyidagi xabar {len(info['users'])} kishiga yuborilsinmi?\n\n{message.text}",
+            reply_markup=buttons,
+        )
+        await state.set_state(PostFlow.waiting_confirm)
+
+    @dp.callback_query(F.data == "ai_post_confirm", PostFlow.waiting_confirm)
+    async def ai_post_confirm_cb(callback: CallbackQuery, state: FSMContext):
+        state_data = await state.get_data()
+        text = state_data.get("text", "")
+        count = 0
+        for uid in info["users"]:
+            try:
+                await callback.bot.send_message(uid, text)
+                count += 1
+            except Exception:
+                pass
+        await callback.message.edit_text(f"✅ {count} ta foydalanuvchiga yuborildi.")
+        await state.clear()
+        await callback.answer()
+
+    @dp.callback_query(F.data == "ai_post_cancel", PostFlow.waiting_confirm)
+    async def ai_post_cancel_cb(callback: CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("❌ Bekor qilindi.")
+        await state.clear()
+        await callback.answer()
+
+    @dp.message(F.text)
+    async def ai_chat(message: Message):
+        if not await check_active(message, info, admin_id):
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        info["stats"]["questions"] += 1
+        info.setdefault("ai_history", {})
+        uid = str(message.from_user.id)
+        history = info["ai_history"].setdefault(uid, [])
+
+        contents = list(history) + [{"role": "user", "parts": [{"text": message.text}]}]
+
+        await message.bot.send_chat_action(message.chat.id, "typing")
+        thinking = await message.answer("💭 O'ylayapman...")
+        try:
+            answer = await ask_gemini_chat(contents)
+            await thinking.edit_text(answer)
+            history.append({"role": "user", "parts": [{"text": message.text}]})
+            history.append({"role": "model", "parts": [{"text": answer}]})
+            info["ai_history"][uid] = history[-12:]  # oxirgi 6 ta savol-javobni saqlaymiz
+            save_data()
+        except Exception as e:
+            logging.error(f"Xatolik: {e}")
+            await thinking.edit_text("Xatolik yuz berdi, birozdan keyin qayta urinib ko'ring.")
+
+
+def setup_money_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    info["stats"].setdefault("conversions", 0)
+    info.setdefault("rates", {"USD": 12650, "EUR": 13700, "RUB": 140})
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: mstart(m))
+
+    def admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="➕ Valyuta qo'shish"), KeyboardButton(text="✏️ Kursni yangilash")],
+            [KeyboardButton(text="🗑 Valyutani o'chirish"), KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def currency_kb():
+        buttons = [[InlineKeyboardButton(text=code, callback_data=f"curr_{code}")] for code in info["rates"]]
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    @dp.message(Command("start"))
+    async def mstart(message: Message):
+        uid = message.from_user.id
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            rates_text = "\n".join(f"{c}: {r:,} so'm" for c, r in info["rates"].items()) or "Hozircha valyuta yo'q."
+            await message.answer(f"💱 <b>Pul bot boshqaruvi</b>\n\nJoriy kurslar:\n{rates_text}", reply_markup=admin_kb())
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        if not info["rates"]:
+            await message.answer("Hozircha valyutalar qo'shilmagan.")
+            return
+        await message.answer("💱 Valyutani tanlang:", reply_markup=currency_kb())
+
+    @dp.message(Command("stats"))
+    @dp.message(F.text == "📊 Statistika")
+    async def money_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(
+            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n"
+            f"💱 Konvertatsiyalar: {info['stats']['conversions']}\n💰 Valyutalar soni: {len(info['rates'])}"
+        )
+
+    @dp.message(F.text == "➕ Valyuta qo'shish")
+    async def add_currency_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("Valyuta kodini yozing (masalan: GBP, CNY, TRY, KZT):")
+        await state.set_state(CurrencyAdd.waiting_code)
+
+    @dp.message(CurrencyAdd.waiting_code)
+    async def add_currency_code(message: Message, state: FSMContext):
+        code = message.text.strip().upper()
+        if not code.isalpha() or len(code) > 6:
+            await message.answer("❌ Kodni to'g'ri kiriting (masalan: GBP).")
+            return
+        await state.update_data(code=code)
+        await message.answer(f"1 {code} necha so'm? (faqat raqam):")
+        await state.set_state(CurrencyAdd.waiting_rate)
+
+    @dp.message(CurrencyAdd.waiting_rate)
+    async def add_currency_rate(message: Message, state: FSMContext):
+        try:
+            rate = float(message.text.strip().replace(" ", "").replace(",", "."))
+        except ValueError:
+            await message.answer("❌ Faqat raqam kiriting.")
+            return
+        state_data = await state.get_data()
+        code = state_data.get("code")
+        info["rates"][code] = rate
+        save_data()
+        await message.answer(f"✅ {code} qo'shildi: 1 {code} = {rate:,} so'm")
+        await state.clear()
+
+    @dp.message(F.text == "✏️ Kursni yangilash")
+    async def update_rate_start(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["rates"]:
+            await message.answer("Hozircha valyuta yo'q. Avval qo'shing.")
+            return
+        buttons = [[InlineKeyboardButton(text=f"{c} ({r:,})", callback_data=f"updrate_{c}")] for c, r in info["rates"].items()]
+        await message.answer("Qaysi valyuta kursini yangilaymiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("updrate_"))
+    async def update_rate_pick(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            return
+        code = callback.data.split("_", 1)[1]
+        await state.update_data(update_code=code)
+        await callback.message.answer(f"1 {code} uchun yangi kursni kiriting (so'm):")
+        await state.set_state(CurrencyUpdate.waiting_rate)
+        await callback.answer()
+
+    @dp.message(CurrencyUpdate.waiting_rate)
+    async def update_rate_save(message: Message, state: FSMContext):
+        try:
+            rate = float(message.text.strip().replace(" ", "").replace(",", "."))
+        except ValueError:
+            await message.answer("❌ Faqat raqam kiriting.")
+            return
+        state_data = await state.get_data()
+        code = state_data.get("update_code")
+        if code in info["rates"]:
+            info["rates"][code] = rate
+            save_data()
+            await message.answer(f"✅ {code} kursi yangilandi: {rate:,} so'm")
+        await state.clear()
+
+    @dp.message(F.text == "🗑 Valyutani o'chirish")
+    async def del_currency_start(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["rates"]:
+            await message.answer("O'chirish uchun valyuta yo'q.")
+            return
+        buttons = [[InlineKeyboardButton(text=c, callback_data=f"delcurr_{c}")] for c in info["rates"]]
+        await message.answer("O'chirmoqchi bo'lgan valyutani tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("delcurr_"))
+    async def del_currency_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        code = callback.data.split("_", 1)[1]
+        removed = info["rates"].pop(code, None)
+        save_data()
+        if removed is not None:
+            await callback.message.answer(f"🗑 {code} o'chirildi.")
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("curr_"))
+    async def pick_currency(callback: CallbackQuery, state: FSMContext):
+        currency = callback.data.split("_", 1)[1]
+        await state.update_data(currency=currency)
+        await callback.message.answer(f"{currency} miqdorini kiriting:")
+        await state.set_state(MoneyAmount.waiting_amount)
+        await callback.answer()
+
+    @dp.message(MoneyAmount.waiting_amount)
+    async def calc_amount(message: Message, state: FSMContext):
+        try:
+            amount = float(message.text.strip().replace(",", "."))
+        except ValueError:
+            await message.answer("❌ Faqat raqam kiriting.")
+            return
+        state_data = await state.get_data()
+        currency = state_data.get("currency", "USD")
+        rate = info["rates"].get(currency, 0)
+        total = amount * rate
+        info["stats"]["conversions"] += 1
+        save_data()
+        await message.answer(f"💱 {amount:,.2f} {currency} = <b>{total:,.0f} so'm</b>")
+        await state.clear()
+
+
+
+def setup_translate_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    info["stats"].setdefault("translations", 0)
+    info.setdefault("user_lang", {})
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: tstart(m))
+
+    LANGS = {"uz": "🇺🇿 O'zbek", "en": "🇬🇧 English", "ru": "🇷🇺 Русский", "tr": "🇹🇷 Türkçe", "ar": "🇸🇦 العربية"}
+
+    def lang_kb():
+        buttons = [[InlineKeyboardButton(text=name, callback_data=f"lang_{code}")] for code, name in LANGS.items()]
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    def lang_chosen_kb():
+        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔄 Tilni o'zgartirish")]] + get_global_button_rows(), resize_keyboard=True)
+
+    def admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    @dp.message(Command("start"))
+    async def tstart(message: Message):
+        uid = message.from_user.id
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            await message.answer("🌐 <b>Tarjimon bot boshqaruvi</b>", reply_markup=admin_kb())
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        await message.answer("🌐 Qaysi tilga tarjima qilishni xohlaysiz?", reply_markup=lang_kb())
+
+    @dp.message(Command("stats"))
+    @dp.message(F.text == "📊 Statistika")
+    async def translate_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(
+            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {len(info['users'])}\n🌐 Tarjimalar: {info['stats']['translations']}"
+        )
+
+    @dp.message(F.text == "📢 Xabar yuborish")
+    async def t_newpost(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("E'lon matnini yuboring:")
+        await state.set_state(PostFlow.waiting_text)
+
+    @dp.message(PostFlow.waiting_text)
+    async def t_post_text(message: Message, state: FSMContext):
+        await state.update_data(text=message.text)
+        buttons = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Yuborish", callback_data="t_post_confirm")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="t_post_cancel")],
+        ])
+        await message.answer(f"{len(info['users'])} kishiga yuborilsinmi?\n\n{message.text}", reply_markup=buttons)
+        await state.set_state(PostFlow.waiting_confirm)
+
+    @dp.callback_query(F.data == "t_post_confirm", PostFlow.waiting_confirm)
+    async def t_post_confirm(callback: CallbackQuery, state: FSMContext):
+        state_data = await state.get_data()
+        text = state_data.get("text", "")
+        count = 0
+        for uid in info["users"]:
+            try:
+                await callback.bot.send_message(uid, text)
+                count += 1
+            except Exception:
+                pass
+        await callback.message.edit_text(f"✅ {count} kishiga yuborildi.")
+        await state.clear()
+        await callback.answer()
+
+    @dp.callback_query(F.data == "t_post_cancel", PostFlow.waiting_confirm)
+    async def t_post_cancel(callback: CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("❌ Bekor qilindi.")
+        await state.clear()
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("lang_"))
+    async def pick_lang(callback: CallbackQuery):
+        code = callback.data.split("_", 1)[1]
+        info.setdefault("user_lang", {})
+        info["user_lang"][str(callback.from_user.id)] = code
+        save_data()
+        await callback.message.answer(
+            f"✅ Til tanlandi: {LANGS[code]}\n\nEndi tarjima qilmoqchi bo'lgan matningizni yuboring.",
+            reply_markup=lang_chosen_kb(),
+        )
+        await callback.answer()
+
+    @dp.message(F.text == "🔄 Tilni o'zgartirish")
+    async def change_lang(message: Message):
+        await message.answer("🌐 Qaysi tilga tarjima qilishni xohlaysiz?", reply_markup=lang_kb())
+
+    @dp.message(F.text)
+    async def do_translate(message: Message):
+        if not await check_active(message, info, admin_id):
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        uid = str(message.from_user.id)
+        lang = info.get("user_lang", {}).get(uid)
+        if not lang:
+            await message.answer("Avval tilni tanlang:", reply_markup=lang_kb())
+            return
+        lang_name = LANGS.get(lang, lang)
+        thinking = await message.answer("💭 Tarjima qilinmoqda...")
+        try:
+            result = await ask_gemini(
+                f"Translate the following text to {lang_name}. Respond with ONLY the translation, nothing else:\n\n{message.text}"
+            )
+            info["stats"]["translations"] += 1
+            save_data()
+            await thinking.edit_text(result)
+        except Exception as e:
+            logging.error(f"Xatolik: {e}")
+            await thinking.edit_text("Xatolik yuz berdi.")
+
+
+
+def setup_taxi_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    info["stats"].setdefault("orders", 0)
+    info.setdefault("orders", {})
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: tstart(m))
+
+    def taxi_admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def taxi_order_kb():
+        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚕 Taksi chaqirish")]], resize_keyboard=True)
+
+    def phone_kb():
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)]],
+            resize_keyboard=True, one_time_keyboard=True,
+        )
+
+    @dp.message(Command("start"))
+    async def tstart(message: Message):
+        uid = message.from_user.id
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            await message.answer("🚕 <b>Taksi bot boshqaruvi</b>\n\nPastdagi menyudan foydalaning 👇", reply_markup=taxi_admin_kb())
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        await message.answer("🚕 Taksi chaqirish uchun quyidagi tugmani bosing 👇", reply_markup=taxi_order_kb())
+
+    @dp.message(Command("stats"))
+    @dp.message(F.text == "📊 Statistika")
+    async def taxi_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(
+            f"📊 <b>Statistika</b>\n\n"
+            f"👥 Foydalanuvchilar: {len(info['users'])}\n"
+            f"🚕 Buyurtmalar: {info['stats']['orders']}"
+        )
+
+    @dp.message(F.text == "🚕 Taksi chaqirish")
+    async def taxi_order_start(message: Message, state: FSMContext):
+        if not await check_active(message, info, admin_id):
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        await message.answer("📍 Qayerdan olib ketish kerak? (manzilni yozing)")
+        await state.set_state(TaxiOrder.waiting_from)
+
+    @dp.message(TaxiOrder.waiting_from)
+    async def taxi_from_process(message: Message, state: FSMContext):
+        await state.update_data(taxi_from=message.text.strip())
+        await message.answer("📍 Qayerga borasiz? (manzilni yozing)")
+        await state.set_state(TaxiOrder.waiting_to)
+
+    @dp.message(TaxiOrder.waiting_to)
+    async def taxi_to_process(message: Message, state: FSMContext):
+        await state.update_data(taxi_to=message.text.strip())
+        await message.answer("📱 Telefon raqamingizni yuboring:", reply_markup=phone_kb())
+        await state.set_state(TaxiOrder.waiting_phone)
+
+    async def finalize_taxi_order(message: Message, state: FSMContext, phone: str):
+        fsm_data = await state.get_data()
+        from_addr = fsm_data.get("taxi_from", "-")
+        to_addr = fsm_data.get("taxi_to", "-")
+        uid = message.from_user.id
+        uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        order_id = uuid.uuid4().hex[:8]
+        info["orders"][order_id] = {
+            "user_id": uid, "from": from_addr, "to": to_addr, "phone": phone,
+            "status": "kutilmoqda", "created_at": datetime.now().isoformat(),
+        }
+        info["stats"]["orders"] += 1
+        save_data()
+        text = (
+            "🚕 <b>Yangi taksi buyurtmasi</b>\n\n"
+            f"📍 Qayerdan: {from_addr}\n"
+            f"📍 Qayerga: {to_addr}\n"
+            f"📱 Telefon: {phone}\n"
+            f"👤 Mijoz: {uname} (ID: <code>{uid}</code>)"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Qabul qilindi", callback_data=f"taxiaccept_{uid}_{order_id}"),
+            InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"taxicancel_{uid}_{order_id}"),
+        ]])
+        for aid in info.get("admin_ids", [admin_id]):
+            try:
+                await message.bot.send_message(chat_id=aid, text=text, reply_markup=kb)
+            except Exception as e:
+                logging.error(f"Adminga buyurtma yuborishda xato ({aid}): {e}")
+        await message.answer(
+            "✅ Buyurtmangiz qabul qilindi! Tez orada haydovchi siz bilan bog'lanadi.",
+            reply_markup=taxi_order_kb(),
+        )
+        await state.clear()
+
+    @dp.message(TaxiOrder.waiting_phone, F.contact)
+    async def taxi_phone_contact(message: Message, state: FSMContext):
+        await finalize_taxi_order(message, state, message.contact.phone_number)
+
+    @dp.message(TaxiOrder.waiting_phone, F.text)
+    async def taxi_phone_text(message: Message, state: FSMContext):
+        await finalize_taxi_order(message, state, message.text.strip())
+
+    @dp.callback_query(F.data.startswith("taxiaccept_"))
+    async def taxi_accept_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        _, target_uid, order_id = callback.data.split("_", 2)
+        order = info["orders"].get(order_id)
+        if order:
+            order["status"] = "qabul qilindi"
+            save_data()
+        try:
+            await callback.bot.send_message(
+                chat_id=int(target_uid),
+                text="✅ <b>Buyurtmangiz qabul qilindi!</b>\n\nHaydovchi tez orada siz bilan bog'lanadi. 🚕",
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+        await callback.message.edit_text(callback.message.text + "\n\n✅ <b>QABUL QILINDI</b>")
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("taxicancel_"))
+    async def taxi_cancel_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        _, target_uid, order_id = callback.data.split("_", 2)
+        order = info["orders"].get(order_id)
+        if order:
+            order["status"] = "bekor qilindi"
+            save_data()
+        try:
+            await callback.bot.send_message(
+                chat_id=int(target_uid),
+                text="❌ <b>Uzr, hozircha buyurtmangizni bajarib bo'lmaydi.</b>\n\nBiroz vaqtdan so'ng qayta urinib ko'ring.",
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+        await callback.message.edit_text(callback.message.text + "\n\n❌ <b>BEKOR QILINDI</b>")
+        await callback.answer()
+
+
+
 SETUP_FUNCTIONS = {
     "kino": setup_kino_bot,
+    "shop": setup_shop_bot,
+    "ai": setup_ai_bot,
+    "money": setup_money_bot,
+    "translate": setup_translate_bot,
+    "taxi": setup_taxi_bot,
 }
 
 
