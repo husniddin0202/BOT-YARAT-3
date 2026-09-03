@@ -248,6 +248,12 @@ BOT_DESCRIPTIONS = {
         "📊 Buyurtmalar statistikasi va majburiy obuna imkoniyati mavjud.\n\n"
         "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
     ),
+    "stars": (
+        "<i>Mijozlaringiz Telegram Stars sotib olishi uchun mo'ljallangan bot.</i>\n\n"
+        "⭐ Tayyor paketlar yoki mijoz o'zi kiritgan miqdorda Stars sotasiz.\n\n"
+        "🧾 Buyurtmalar, foydalanuvchilar va statistikani to'liq boshqarish imkoniyati.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi (20+ funksiya)."
+    ),
 }
 
 def is_active(info: dict) -> bool:
@@ -3336,6 +3342,595 @@ def setup_taxi_bot(dp: Dispatcher, token: str):
 
 
 
+# ---------- Stars sotish boti ----------
+def setup_stars_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    info["stats"].setdefault("orders", 0)
+    info["stats"].setdefault("stars_sold", 0)
+    info["stats"].setdefault("revenue", 0)
+    info.setdefault("star_packages", {})
+    info.setdefault("star_orders", {})
+    info.setdefault("blocked_users", [])
+    info.setdefault("min_stars", 50)
+    info.setdefault("max_stars", 10000)
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: sstart(m))
+
+    # ---------- Klaviaturalar ----------
+    def stars_admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📦 Paketlar"), KeyboardButton(text="🧾 Buyurtmalar")],
+            [KeyboardButton(text="👥 Foydalanuvchilar"), KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="📢 Xabar yuborish"), KeyboardButton(text="⚙️ Sozlamalar")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def packages_menu_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="➕ Paket qo'shish"), KeyboardButton(text="📋 Paketlar ro'yxati")],
+            [KeyboardButton(text="✏️ Paketni tahrirlash"), KeyboardButton(text="➖ Paketni o'chirish")],
+            [KeyboardButton(text="◀️ Orqaga")],
+        ], resize_keyboard=True)
+
+    def orders_menu_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="🕓 Kutilayotgan"), KeyboardButton(text="✅ Bajarilgan")],
+            [KeyboardButton(text="❌ Rad etilgan")],
+            [KeyboardButton(text="◀️ Orqaga")],
+        ], resize_keyboard=True)
+
+    def users_menu_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📋 Ro'yxat"), KeyboardButton(text="🔍 Qidirish")],
+            [KeyboardButton(text="🚫 Bloklash"), KeyboardButton(text="✅ Blokdan chiqarish")],
+            [KeyboardButton(text="◀️ Orqaga")],
+        ], resize_keyboard=True)
+
+    def settings_menu_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="🔢 Min/Max miqdor")],
+            [KeyboardButton(text="◀️ Orqaga")],
+        ], resize_keyboard=True)
+
+    def customer_kb():
+        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⭐ Stars sotib olish")]], resize_keyboard=True)
+
+    def packages_inline_kb():
+        buttons = [
+            [InlineKeyboardButton(text=f"⭐ {p['stars']:,} — {p['price']:,} so'm", callback_data=f"starpkg_{pid}")]
+            for pid, p in info["star_packages"].items()
+        ]
+        buttons.append([InlineKeyboardButton(text="✏️ Boshqa miqdor kiritish", callback_data="starcustom")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    def is_blocked(uid: int) -> bool:
+        return uid in info.get("blocked_users", [])
+
+    # ---------- /start ----------
+    @dp.message(Command("start"))
+    async def sstart(message: Message):
+        uid = message.from_user.id
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            await message.answer("⭐ <b>Stars sotish boti — boshqaruv</b>", reply_markup=stars_admin_kb())
+            return
+        if is_blocked(uid):
+            await message.answer("🚫 Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        await message.answer(
+            "⭐ <b>Stars sotib olish</b>\n\nTayyor paketlardan birini tanlang yoki xohlagan miqdoringizni kiriting 👇",
+            reply_markup=packages_inline_kb(),
+        )
+        await message.answer("Pastdagi menyudan ham foydalanishingiz mumkin 👇", reply_markup=customer_kb())
+
+    @dp.message(F.text == "⭐ Stars sotib olish")
+    async def stars_buy_menu(message: Message):
+        if not await check_active(message, info, admin_id):
+            return
+        if is_blocked(message.from_user.id):
+            await message.answer("🚫 Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        await message.answer("⭐ Paketni tanlang yoki miqdor kiriting:", reply_markup=packages_inline_kb())
+
+    @dp.message(F.text == "◀️ Orqaga")
+    async def stars_back_to_admin(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("⭐ <b>Boshqaruv paneli</b>", reply_markup=stars_admin_kb())
+
+    # ---------- Statistika ----------
+    @dp.message(Command("stats"))
+    @dp.message(F.text == "📊 Statistika")
+    async def stars_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        pending = sum(1 for o in info["star_orders"].values() if o["status"] == "kutilmoqda")
+        done = sum(1 for o in info["star_orders"].values() if o["status"] == "bajarildi")
+        await message.answer(
+            "📊 <b>Statistika</b>\n\n"
+            f"👥 Foydalanuvchilar: {len(info['users'])}\n"
+            f"🧾 Jami buyurtmalar: {info['stats']['orders']}\n"
+            f"⭐ Sotilgan Stars: {info['stats']['stars_sold']:,}\n"
+            f"💰 Jami tushum: {info['stats']['revenue']:,} so'm\n\n"
+            f"🕓 Kutilayotgan: {pending}\n"
+            f"✅ Bajarilgan: {done}"
+        )
+
+    # ---------- Paketlar boshqaruvi ----------
+    @dp.message(F.text == "📦 Paketlar")
+    async def packages_panel(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("📦 <b>Paketlar boshqaruvi</b>", reply_markup=packages_menu_kb())
+
+    @dp.message(F.text == "➕ Paket qo'shish")
+    async def pkg_add_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("Nechta Stars? (faqat raqam, masalan: 100):")
+        await state.set_state(StarPackageAdd.waiting_stars)
+
+    @dp.message(StarPackageAdd.waiting_stars)
+    async def pkg_add_stars(message: Message, state: FSMContext):
+        try:
+            stars = int(message.text.strip().replace(" ", ""))
+            if stars <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        await state.update_data(pkg_stars=stars)
+        await message.answer("Narxini kiriting (so'mda, faqat raqam):")
+        await state.set_state(StarPackageAdd.waiting_price)
+
+    @dp.message(StarPackageAdd.waiting_price)
+    async def pkg_add_price(message: Message, state: FSMContext):
+        try:
+            price = int(message.text.strip().replace(" ", ""))
+            if price <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        fsm_data = await state.get_data()
+        pid = uuid.uuid4().hex[:8]
+        info["star_packages"][pid] = {"stars": fsm_data["pkg_stars"], "price": price}
+        save_data()
+        await message.answer(f"✅ Paket qo'shildi: ⭐ {fsm_data['pkg_stars']:,} — {price:,} so'm")
+        await state.clear()
+
+    @dp.message(F.text == "📋 Paketlar ro'yxati")
+    async def pkg_list(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["star_packages"]:
+            await message.answer("Paketlar mavjud emas.")
+        else:
+            lines = [f"• ⭐ {p['stars']:,} — {p['price']:,} so'm" for p in info["star_packages"].values()]
+            await message.answer("📦 Paketlar:\n\n" + "\n".join(lines))
+
+    @dp.message(F.text == "✏️ Paketni tahrirlash")
+    async def pkg_edit_start(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["star_packages"]:
+            await message.answer("Tahrirlash uchun paket yo'q.")
+            return
+        buttons = [[InlineKeyboardButton(text=f"⭐ {p['stars']:,} — {p['price']:,} so'm", callback_data=f"pkgedit_{pid}")] for pid, p in info["star_packages"].items()]
+        await message.answer("Tahrirlamoqchi bo'lgan paketni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("pkgedit_"))
+    async def pkg_edit_pick(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            return
+        pid = callback.data.split("_", 1)[1]
+        await state.update_data(edit_pkg_id=pid)
+        await callback.message.answer("Yangi narxni kiriting (so'mda):")
+        await state.set_state(StarPackageEdit.waiting_price)
+        await callback.answer()
+
+    @dp.message(StarPackageEdit.waiting_price)
+    async def pkg_edit_save(message: Message, state: FSMContext):
+        try:
+            price = int(message.text.strip().replace(" ", ""))
+            if price <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        fsm_data = await state.get_data()
+        pid = fsm_data.get("edit_pkg_id")
+        if pid in info["star_packages"]:
+            info["star_packages"][pid]["price"] = price
+            save_data()
+            await message.answer(f"✅ Narx yangilandi: {price:,} so'm")
+        await state.clear()
+
+    @dp.message(F.text == "➖ Paketni o'chirish")
+    async def pkg_del_start(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["star_packages"]:
+            await message.answer("O'chirish uchun paket yo'q.")
+            return
+        buttons = [[InlineKeyboardButton(text=f"⭐ {p['stars']:,} — {p['price']:,} so'm", callback_data=f"pkgdel_{pid}")] for pid, p in info["star_packages"].items()]
+        await message.answer("O'chirmoqchi bo'lgan paketni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("pkgdel_"))
+    async def pkg_del_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        pid = callback.data.split("_", 1)[1]
+        removed = info["star_packages"].pop(pid, None)
+        save_data()
+        if removed:
+            await callback.message.answer(f"🗑 O'chirildi: ⭐ {removed['stars']:,}")
+        await callback.answer()
+
+    # ---------- Sozlamalar ----------
+    @dp.message(F.text == "⚙️ Sozlamalar")
+    async def settings_panel(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(
+            f"⚙️ <b>Sozlamalar</b>\n\nMin: {info['min_stars']:,} ⭐\nMax: {info['max_stars']:,} ⭐",
+            reply_markup=settings_menu_kb(),
+        )
+
+    @dp.message(F.text == "🔢 Min/Max miqdor")
+    async def minmax_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("Minimal Stars miqdorini kiriting:")
+        await state.set_state(StarSettings.waiting_min)
+
+    @dp.message(StarSettings.waiting_min)
+    async def minmax_min(message: Message, state: FSMContext):
+        try:
+            val = int(message.text.strip())
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        await state.update_data(min_val=val)
+        await message.answer("Maksimal Stars miqdorini kiriting:")
+        await state.set_state(StarSettings.waiting_max)
+
+    @dp.message(StarSettings.waiting_max)
+    async def minmax_max(message: Message, state: FSMContext):
+        try:
+            val = int(message.text.strip())
+            if val <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        fsm_data = await state.get_data()
+        min_val = fsm_data.get("min_val", 50)
+        if val < min_val:
+            await message.answer("❌ Maksimal miqdor minimaldan kichik bo'lmasligi kerak.")
+            return
+        info["min_stars"] = min_val
+        info["max_stars"] = val
+        save_data()
+        await message.answer(f"✅ Saqlandi: {min_val:,} – {val:,} ⭐")
+        await state.clear()
+
+    # ---------- Foydalanuvchilar ----------
+    @dp.message(F.text == "👥 Foydalanuvchilar")
+    async def users_panel(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(f"👥 Jami foydalanuvchilar: {len(info['users'])}", reply_markup=users_menu_kb())
+
+    @dp.message(F.text == "📋 Ro'yxat")
+    async def users_list(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        users = info["users"][-30:]
+        text = f"👥 Oxirgi {len(users)} foydalanuvchi (jami {len(info['users'])}):\n\n" + "\n".join(f"• <code>{u}</code>" for u in users)
+        await message.answer(text)
+
+    @dp.message(F.text == "🔍 Qidirish")
+    async def users_search_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("Qidirmoqchi bo'lgan foydalanuvchi ID raqamini kiriting:")
+        await state.set_state(StarUserSearch.waiting_query)
+
+    @dp.message(StarUserSearch.waiting_query)
+    async def users_search_result(message: Message, state: FSMContext):
+        try:
+            target = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Faqat raqamli ID kiriting.")
+            return
+        found = target in info["users"]
+        blocked = is_blocked(target)
+        user_orders = [o for o in info["star_orders"].values() if o["user_id"] == target]
+        total_bought = sum(o["stars"] for o in user_orders if o["status"] == "bajarildi")
+        await message.answer(
+            f"🔍 <b>Natija:</b>\n\n"
+            f"🆔 ID: <code>{target}</code>\n"
+            f"{'✅ Botda ro‘yxatdan o‘tgan' if found else '❌ Bu bot foydalanuvchisi emas'}\n"
+            f"{'🚫 Bloklangan' if blocked else '✅ Bloklanmagan'}\n"
+            f"🧾 Buyurtmalar: {len(user_orders)}\n"
+            f"⭐ Xarid qilingan Stars: {total_bought:,}"
+        )
+        await state.clear()
+
+    @dp.message(F.text == "🚫 Bloklash")
+    async def block_user_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("Bloklamoqchi bo'lgan foydalanuvchi ID raqamini kiriting:")
+        await state.set_state(StarBlockUser.waiting_id)
+
+    @dp.message(StarBlockUser.waiting_id)
+    async def block_user_save(message: Message, state: FSMContext):
+        try:
+            target = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Faqat raqamli ID kiriting.")
+            return
+        if target not in info["blocked_users"]:
+            info["blocked_users"].append(target)
+            save_data()
+        await message.answer(f"🚫 {target} bloklandi.")
+        await state.clear()
+
+    @dp.message(F.text == "✅ Blokdan chiqarish")
+    async def unblock_user_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("Blokdan chiqarmoqchi bo'lgan foydalanuvchi ID raqamini kiriting:")
+        await state.set_state(StarUnblockUser.waiting_id)
+
+    @dp.message(StarUnblockUser.waiting_id)
+    async def unblock_user_save(message: Message, state: FSMContext):
+        try:
+            target = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Faqat raqamli ID kiriting.")
+            return
+        if target in info["blocked_users"]:
+            info["blocked_users"].remove(target)
+            save_data()
+            await message.answer(f"✅ {target} blokdan chiqarildi.")
+        else:
+            await message.answer("Bu foydalanuvchi bloklanmagan.")
+        await state.clear()
+
+    # ---------- Xabar yuborish ----------
+    @dp.message(F.text == "📢 Xabar yuborish")
+    async def stars_broadcast_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("E'lon matnini yuboring:")
+        await state.set_state(PostFlow.waiting_text)
+
+    @dp.message(PostFlow.waiting_text)
+    async def stars_broadcast_text(message: Message, state: FSMContext):
+        await state.update_data(text=message.text)
+        buttons = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Yuborish", callback_data="stars_post_confirm")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="stars_post_cancel")],
+        ])
+        await message.answer(f"{len(info['users'])} kishiga yuborilsinmi?\n\n{message.text}", reply_markup=buttons)
+        await state.set_state(PostFlow.waiting_confirm)
+
+    @dp.callback_query(F.data == "stars_post_confirm", PostFlow.waiting_confirm)
+    async def stars_broadcast_confirm(callback: CallbackQuery, state: FSMContext):
+        fsm_data = await state.get_data()
+        text = fsm_data.get("text", "")
+        count = 0
+        for uid in info["users"]:
+            try:
+                await callback.bot.send_message(uid, text)
+                count += 1
+            except Exception:
+                pass
+        await callback.message.edit_text(f"✅ {count} ta foydalanuvchiga yuborildi.")
+        await state.clear()
+        await callback.answer()
+
+    @dp.callback_query(F.data == "stars_post_cancel", PostFlow.waiting_confirm)
+    async def stars_broadcast_cancel(callback: CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("❌ Bekor qilindi.")
+        await state.clear()
+        await callback.answer()
+
+    # ---------- Buyurtmalar ro'yxati (admin) ----------
+    def order_status_list_text(status: str, emoji: str):
+        orders = [(oid, o) for oid, o in info["star_orders"].items() if o["status"] == status]
+        if not orders:
+            return f"{emoji} Bu holatda buyurtma yo'q."
+        lines = [f"#{oid[:6]} — ⭐{o['stars']:,} — {o['price']:,} so'm — ID:{o['user_id']}" for oid, o in orders[-20:]]
+        return f"{emoji} <b>Buyurtmalar ({len(orders)}):</b>\n\n" + "\n".join(lines)
+
+    @dp.message(F.text == "🧾 Buyurtmalar")
+    async def orders_panel(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("🧾 <b>Buyurtmalar boshqaruvi</b>", reply_markup=orders_menu_kb())
+
+    @dp.message(F.text == "🕓 Kutilayotgan")
+    async def orders_pending(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(order_status_list_text("kutilmoqda", "🕓"))
+
+    @dp.message(F.text == "✅ Bajarilgan")
+    async def orders_done(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(order_status_list_text("bajarildi", "✅"))
+
+    @dp.message(F.text == "❌ Rad etilgan")
+    async def orders_rejected(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(order_status_list_text("bekor qilindi", "❌"))
+
+    # ---------- Mijoz: paket tanlash / miqdor kiritish ----------
+    @dp.callback_query(F.data.startswith("starpkg_"))
+    async def starpkg_chosen_cb(callback: CallbackQuery, state: FSMContext):
+        pid = callback.data.split("_", 1)[1]
+        pkg = info["star_packages"].get(pid)
+        if not pkg:
+            await callback.answer("❌ Bu paket endi mavjud emas.", show_alert=True)
+            return
+        await start_star_payment(callback.message, callback.from_user.id, state, pkg["stars"], pkg["price"])
+        await callback.answer()
+
+    @dp.callback_query(F.data == "starcustom")
+    async def starcustom_cb(callback: CallbackQuery, state: FSMContext):
+        await callback.message.answer(
+            f"Nechta Stars xohlaysiz? ({info['min_stars']:,} – {info['max_stars']:,} oralig'ida):"
+        )
+        await state.set_state(StarOrderCustom.waiting_amount)
+        await callback.answer()
+
+    @dp.message(StarOrderCustom.waiting_amount)
+    async def starcustom_amount(message: Message, state: FSMContext):
+        try:
+            stars = int(message.text.strip().replace(" ", ""))
+        except ValueError:
+            await message.answer("❌ Faqat raqam kiriting.")
+            return
+        if stars < info["min_stars"] or stars > info["max_stars"]:
+            await message.answer(f"❌ Miqdor {info['min_stars']:,} – {info['max_stars']:,} oralig'ida bo'lishi kerak.")
+            return
+        # Narxni eng yaqin paket nisbati asosida yoki oddiy formulaga ko'ra hisoblaymiz
+        if info["star_packages"]:
+            sample = next(iter(info["star_packages"].values()))
+            price_per_star = sample["price"] / sample["stars"]
+        else:
+            price_per_star = 150
+        price = round(stars * price_per_star)
+        await start_star_payment(message, message.from_user.id, state, stars, price)
+
+    async def start_star_payment(target_message: Message, uid: int, state: FSMContext, stars: int, price: int):
+        await state.update_data(order_stars=stars, order_price=price)
+        if not info["payment_systems"]:
+            await target_message.answer("Hozircha to'lov tizimlari mavjud emas. Administratorga murojaat qiling.")
+            return
+        buttons = [[InlineKeyboardButton(text=p["name"], callback_data=f"starpay_{pid}")] for pid, p in info["payment_systems"].items()]
+        await target_message.answer(
+            f"⭐ Miqdor: {stars:,}\n💰 Narx: {price:,} so'm\n\n💳 To'lov tizimini tanlang:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+
+    @dp.callback_query(F.data.startswith("starpay_"))
+    async def starpay_chosen_cb(callback: CallbackQuery, state: FSMContext):
+        pid = callback.data.split("_", 1)[1]
+        psys = info["payment_systems"].get(pid)
+        if not psys:
+            await callback.answer("❌ Ma'lumot topilmadi, qaytadan urinib ko'ring.", show_alert=True)
+            return
+        fsm_data = await state.get_data()
+        price = fsm_data.get("order_price", 0)
+        await state.set_state(StarOrderCheck.waiting_check)
+        text = (
+            f"💳 <b>{psys['name']}</b>\n\n"
+            f"🔢 Raqami: <code>{psys['number']}</code>\n"
+            f"👤 Egasi: {psys['owner']}\n\n"
+            f"💰 To'lov summasi: {price:,} so'm\n\n"
+            "To'lovni amalga oshirgach, to'lov chekini (skrinshot) shu yerga yuboring."
+        )
+        await callback.message.answer(text)
+        await callback.answer()
+
+    @dp.message(StarOrderCheck.waiting_check, F.photo)
+    async def star_check_received(message: Message, state: FSMContext):
+        fsm_data = await state.get_data()
+        stars = fsm_data.get("order_stars", 0)
+        price = fsm_data.get("order_price", 0)
+        uid = message.from_user.id
+        uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        order_id = uuid.uuid4().hex[:8]
+        info["star_orders"][order_id] = {
+            "user_id": uid, "stars": stars, "price": price,
+            "status": "kutilmoqda", "created_at": datetime.now().isoformat(),
+        }
+        info["stats"]["orders"] += 1
+        save_data()
+        caption = (
+            "🧾 <b>Yangi Stars buyurtmasi</b>\n\n"
+            f"⭐ Miqdor: {stars:,}\n"
+            f"💰 Narx: {price:,} so'm\n"
+            f"👤 Foydalanuvchi: {uname} (ID: <code>{uid}</code>)"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"starapprove_{uid}_{order_id}"),
+            InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"starreject_{uid}_{order_id}"),
+        ]])
+        for aid in info.get("admin_ids", [admin_id]):
+            try:
+                await message.bot.send_photo(chat_id=aid, photo=message.photo[-1].file_id, caption=caption, reply_markup=kb)
+            except Exception as e:
+                logging.error(f"Adminga chek yuborishda xato ({aid}): {e}")
+        await message.answer(
+            "✅ Chekingiz qabul qilindi!\n\n"
+            "Adminlar tomonidan tez orada ko'rib chiqiladi. Tasdiqlansa, Stars hisobingizga tez orada yuboriladi."
+        )
+        await state.clear()
+
+    @dp.callback_query(F.data.startswith("starapprove_"))
+    async def star_approve_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        _, target_uid, order_id = callback.data.split("_", 2)
+        order = info["star_orders"].get(order_id)
+        if order:
+            order["status"] = "bajarildi"
+            info["stats"]["stars_sold"] += order["stars"]
+            info["stats"]["revenue"] += order["price"]
+            save_data()
+        try:
+            await callback.bot.send_message(
+                chat_id=int(target_uid),
+                text="✅ <b>To'lovingiz tasdiqlandi!</b>\n\n⭐ Stars tez orada hisobingizga yuboriladi. Rahmat!",
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ <b>TASDIQLANDI</b>")
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("starreject_"))
+    async def star_reject_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        _, target_uid, order_id = callback.data.split("_", 2)
+        order = info["star_orders"].get(order_id)
+        if order:
+            order["status"] = "bekor qilindi"
+            save_data()
+        try:
+            await callback.bot.send_message(
+                chat_id=int(target_uid),
+                text="❌ <b>To'lovingiz admin tomonidan bekor qilindi.</b>\n\nAgar savollaringiz bo'lsa, administrator bilan bog'laning.",
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ <b>BEKOR QILINDI</b>")
+        await callback.answer()
+
+
+
 SETUP_FUNCTIONS = {
     "kino": setup_kino_bot,
     "shop": setup_shop_bot,
@@ -3343,6 +3938,7 @@ SETUP_FUNCTIONS = {
     "money": setup_money_bot,
     "translate": setup_translate_bot,
     "taxi": setup_taxi_bot,
+    "stars": setup_stars_bot,
 }
 
 
