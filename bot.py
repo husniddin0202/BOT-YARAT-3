@@ -62,13 +62,14 @@ DEFAULT_PRICES = {
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
 DEFAULT_TARIFFS = {
-    "1": {"name": "🚀 Start", "price": 9_000, "daily_limit": 300, "speed": "~0.5s"},
-    "2": {"name": "⭐ Standard", "price": 18_000, "daily_limit": 1_000, "speed": "~0.4s"},
+    "1": {"name": "🚀 Start", "price": 10_000, "daily_limit": 500, "speed": "~0.5s"},
+    "2": {"name": "⭐ Standard", "price": 20_000, "daily_limit": 1_000, "speed": "~0.4s"},
     "3": {"name": "💎 Pro 🔥", "price": 35_000, "daily_limit": 3_000, "speed": "~0.3s"},
-    "4": {"name": "⚡ Turbo", "price": 65_000, "daily_limit": 7_500, "speed": "~0.2s"},
-    "5": {"name": "🔥 Ultra", "price": 90_000, "daily_limit": 15_000, "speed": "~0.1s"},
-    "6": {"name": "♾ Unlimited", "price": 150_000, "daily_limit": None, "speed": "~0s"},
+    "4": {"name": "⚡ Turbo", "price": 50_000, "daily_limit": 7_500, "speed": "~0.2s"},
+    "5": {"name": "♾️ Unlimited", "price": 80_000, "daily_limit": None, "speed": "~0s"},
 }
+
+DEFAULT_OTHER_BOT_PRICE = 35_000  # kino'dan boshqa barcha bot turlari uchun yagona oylik narx
 
 running_bots = {}
 
@@ -156,13 +157,20 @@ def somz_to_stars(somz: int) -> int:
     return max(1, round(somz / rate))
 
 # Har bir bot uchun 3 xil oylik tarif (narx + kunlik foydalanuvchi limiti)
+# Kino bot uchun 5 xil oylik tarif (narx + kunlik foydalanuvchi limiti)
 data.setdefault("tariffs", {tid: dict(t) for tid, t in DEFAULT_TARIFFS.items()})
 for _tid, _t in DEFAULT_TARIFFS.items():
     data["tariffs"].setdefault(_tid, dict(_t))
 
+# Kino'dan boshqa barcha bot turlari uchun yagona oylik narx (tarifsiz, cheksiz foydalanuvchi)
+data.setdefault("other_bot_price", DEFAULT_OTHER_BOT_PRICE)
+
 # RAVSHAN BUILDER BOTning to'liq nusxalari (klonlari) shu yerda ro'yxatga olinadi.
 # Har biri: {"token": "...", "username": "...", "created_at": "..."}
 data.setdefault("platform_clones", [])
+
+# Bot Creator platformasining o'ziga /start bosgan barcha foydalanuvchilar
+data.setdefault("platform_users", [])
 
 running_platform_clones = {}  # token -> asyncio task
 
@@ -179,8 +187,13 @@ def get_tariff(tariff_id: str) -> dict:
     return data["tariffs"].get(tariff_id, DEFAULT_TARIFFS.get(tariff_id, DEFAULT_TARIFFS["2"]))
 
 
+OTHER_BOT_TARIFF_NAME = "Standart"
+
+
 def get_bot_tariff(info: dict) -> dict:
-    return get_tariff(info.get("tariff", "2"))
+    if info.get("type") == "kino":
+        return get_tariff(info.get("tariff", "2"))
+    return {"name": OTHER_BOT_TARIFF_NAME, "price": data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE), "daily_limit": None}
 
 
 def tariff_limit_text(t: dict) -> str:
@@ -911,10 +924,15 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(Command("start"))
     async def main_start(message: Message):
+        uid = message.from_user.id
+        if uid not in data["platform_users"]:
+            data["platform_users"].append(uid)
+            save_data()
         tariff_lines = "\n".join(
             f"💠 {t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})"
             for t in data["tariffs"].values()
         )
+        other_price = data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE)
         text = (
             "🤖 <b>Bot Creator</b> — Telegram botlar yaratish uchun qulay platforma\n\n"
             "Bu platforma orqali siz hech qanday kod yozmasdan o'z Telegram botlaringizni "
@@ -925,8 +943,9 @@ def setup_platform_bot(dp: Dispatcher):
             "• To'liq o'zbek tilidagi qulay interfeys\n"
             "• Doimiy va tezkor qo'llab-quvvatlash xizmati\n"
             "• Barcha jarayonlar avtomatik va tushunarli\n\n"
-            "💳 <b>Tariflar (har bir bot turi uchun bir xil):</b>\n"
+            "💳 <b>🎬 Kino bot tariflari:</b>\n"
             f"{tariff_lines}\n\n"
+            f"💳 <b>Boshqa barcha bot turlari:</b> {other_price:,} so'm/oy\n\n"
             f"🎁 Har bir bot uchun {TRIAL_DAYS} kunlik BEPUL sinov muddati bor!\n\n"
             "Pastdagi menyudan foydalaning 👇"
         )
@@ -1223,6 +1242,7 @@ def setup_platform_bot(dp: Dispatcher):
         total_balance = sum(data["user_balances"].values())
         await message.answer(
             "📊 <b>Platforma statistikasi</b>\n\n"
+            f"👤 Bot Creator'ga kirgan odamlar: {len(data['platform_users']):,}\n\n"
             f"🤖 Jami botlar: {total_bots}\n"
             f"🟢 Faol botlar: {active_bots}\n"
             f"👥 Balansi bor foydalanuvchilar: {len(data['user_balances'])}\n"
@@ -1277,20 +1297,25 @@ def setup_platform_bot(dp: Dispatcher):
 
     def type_detail_text(bot_type: str) -> str:
         desc = BOT_DESCRIPTIONS.get(bot_type, "")
+        if bot_type == "kino":
+            price_line = "💰 Oylik to'lov: tarifga qarab belgilanadi"
+        else:
+            price_line = f"💰 Oylik to'lov: {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy"
         return (
             f"{BOT_TYPES[bot_type]}\n\n"
             f"{desc}\n\n"
             f"💵 Yaratish narxi: 0 so'm\n"
-            f"💰 Oylik to'lov: tarifga qarab belgilanadi\n"
+            f"{price_line}\n"
             f"🎁 Bepul sinov muddati: {TRIAL_DAYS} kun"
         )
 
     def type_detail_kb(bot_type: str):
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Tariflar ro'yxati", callback_data=f"tariffpreview_{bot_type}")],
-            [InlineKeyboardButton(text="✅ Bot yaratish — Bepul", callback_data=f"createbot_{bot_type}")],
-            [InlineKeyboardButton(text="◀️ Orqaga", callback_data="backtotypes")],
-        ])
+        buttons = []
+        if bot_type == "kino":
+            buttons.append([InlineKeyboardButton(text="💳 Tariflar ro'yxati", callback_data=f"tariffpreview_{bot_type}")])
+        buttons.append([InlineKeyboardButton(text="✅ Bot yaratish — Bepul", callback_data=f"createbot_{bot_type}")])
+        buttons.append([InlineKeyboardButton(text="◀️ Orqaga", callback_data="backtotypes")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     def tariff_preview_text(bot_type: str) -> str:
         cards = "\n\n".join(tariff_card_text(tid, t) for tid, t in data["tariffs"].items())
@@ -1340,6 +1365,33 @@ def setup_platform_bot(dp: Dispatcher):
         )
         await callback.answer()
 
+    async def finalize_bot_creation(token: str, bot_name: str, bot_type: str, uid: int, tariff_id):
+        bot_id = data["next_bot_id"]
+        data["next_bot_id"] += 1
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        data["bots"][token] = {
+            "id": bot_id,
+            "type": bot_type,
+            "name": bot_name,
+            "admin_id": uid,
+            "admin_ids": [uid],
+            "created_at": datetime.now().isoformat(),
+            "paid_until": None,
+            "tariff": tariff_id,
+            "daily_usage": {"date": today, "users": []},
+            "movies": {},
+            "products": {},
+            "next_id": 1,
+            "carts": {},
+            "channels": {},
+            "users": [],
+            "stats": {},
+        }
+        save_data()
+        await start_child_bot(token, bot_type)
+        return data["bots"][token]
+
     @dp.message(NewBotFlow.waiting_token)
     async def newbot_token(message: Message, state: FSMContext):
         token = message.text.strip()
@@ -1355,6 +1407,19 @@ def setup_platform_bot(dp: Dispatcher):
         bot_type = state_data.get("bot_type")
         if not bot_type:
             await message.answer("Xatolik: qaytadan \"🤖 Bot yaratish\" bosing.")
+            await state.clear()
+            return
+
+        if bot_type != "kino":
+            # Kino'dan boshqa botlar — tarifsiz, yagona narx, tanlash shart emas
+            info = await finalize_bot_creation(token, me.first_name, bot_type, message.from_user.id, None)
+            tariff = get_bot_tariff(info)
+            await message.answer(
+                f"✅ {BOT_TYPES[bot_type]} ishga tushdi: <b>{me.first_name}</b>\n\n"
+                f"💰 Oylik narx: {tariff['price']:,} so'm/oy\n"
+                f"🎁 {TRIAL_DAYS} kunlik bepul sinov boshlandi!\n"
+                "Majburiy obuna qo'shish uchun o'sha botga /channels yozing."
+            )
             await state.clear()
             return
 
@@ -1377,31 +1442,7 @@ def setup_platform_bot(dp: Dispatcher):
             await callback.answer("Xatolik: qaytadan \"🤖 Bot yaratish\" bosing.", show_alert=True)
             return
 
-        bot_id = data["next_bot_id"]
-        data["next_bot_id"] += 1
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        data["bots"][token] = {
-            "id": bot_id,
-            "type": bot_type,
-            "name": bot_name,
-            "admin_id": callback.from_user.id,
-            "admin_ids": [callback.from_user.id],
-            "created_at": datetime.now().isoformat(),
-            "paid_until": None,
-            "tariff": tariff_id,
-            "daily_usage": {"date": today, "users": []},
-            "movies": {},
-            "products": {},
-            "next_id": 1,
-            "carts": {},
-            "channels": {},
-            "users": [],
-            "stats": {},
-        }
-        save_data()
-
-        await start_child_bot(token, bot_type)
+        info = await finalize_bot_creation(token, bot_name, bot_type, callback.from_user.id, tariff_id)
 
         tariff = get_tariff(tariff_id)
         await callback.message.edit_text(
@@ -1425,7 +1466,28 @@ def setup_platform_bot(dp: Dispatcher):
             )]
             for tid, t in data["tariffs"].items()
         ]
-        await message.answer("💰 <b>Tariflarni boshqarish</b>\n\nNarxini o'zgartirish uchun tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        buttons.append([InlineKeyboardButton(
+            text=f"🤖 Boshqa botlar — {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy",
+            callback_data="editotherprice",
+        )])
+        await message.answer(
+            "💰 <b>Tariflarni boshqarish</b>\n\n"
+            "🎬 Kino bot uchun 5 xil tarif, boshqa barcha bot turlari uchun yagona narx.\n\n"
+            "Narxini o'zgartirish uchun tanlang:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+
+    @dp.callback_query(F.data == "editotherprice")
+    async def editotherprice_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        await callback.message.answer(
+            f"Kino'dan boshqa barcha botlar uchun yangi oylik narxni kiriting (so'm, faqat raqam):\n\n"
+            f"Joriy narx: {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy"
+        )
+        await state.set_state(EditPrice.waiting_amount)
+        await state.update_data(edit_tariff_id=None, edit_other_price=True)
+        await callback.answer()
 
     @dp.message(F.text == "⭐ Stars kursi")
     async def stars_rate_start(message: Message, state: FSMContext):
@@ -1478,6 +1540,12 @@ def setup_platform_bot(dp: Dispatcher):
             await message.answer("❌ Faqat musbat raqam kiriting.")
             return
         state_data = await state.get_data()
+        if state_data.get("edit_other_price"):
+            data["other_bot_price"] = amount
+            save_data()
+            await message.answer(f"✅ Boshqa botlar narxi endi {amount:,} so'm/oy.")
+            await state.clear()
+            return
         tid = state_data.get("edit_tariff_id")
         if tid and tid in data["tariffs"]:
             data["tariffs"][tid]["price"] = amount
@@ -1595,7 +1663,8 @@ def setup_platform_bot(dp: Dispatcher):
                 if info.get("paid_until"):
                     buttons.append([InlineKeyboardButton(text="❌ Tasdiqdan chiqarish", callback_data=f"deactivate_{info['id']}")])
             if uid in info.get("admin_ids", [info["admin_id"]]):
-                buttons.append([InlineKeyboardButton(text="🔄 Tarifni o'zgartirish", callback_data=f"changetariff_{info['id']}")])
+                if info["type"] == "kino":
+                    buttons.append([InlineKeyboardButton(text="🔄 Tarifni o'zgartirish", callback_data=f"changetariff_{info['id']}")])
                 buttons.append([InlineKeyboardButton(text="💰 Hozir to'lov qilish", callback_data=f"paynow_{info['id']}")])
             kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
             await message.answer(text, reply_markup=kb)
@@ -1612,6 +1681,9 @@ def setup_platform_bot(dp: Dispatcher):
         token, target = find_bot_by_id(bot_id)
         if not target or callback.from_user.id not in target.get("admin_ids", [target["admin_id"]]):
             await callback.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        if target["type"] != "kino":
+            await callback.answer("Bu bot turi uchun tarif tanlash mavjud emas — narx doim bir xil.", show_alert=True)
             return
         current_tariff = target.get("tariff", "2")
         buttons = [
