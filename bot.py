@@ -42,6 +42,7 @@ main_dp = Dispatcher(storage=MemoryStorage())
 
 BOT_TYPES = {
     "kino": "🎬 Kino bot",
+    "kino_ultra": "🎬✨ Kino Ultra Premium",
     "shop": "🛒 Savdo bot",
     "ai": "🤖 AI-yordamchi bot",
     "money": "💱 Pul (valyuta) bot",
@@ -191,7 +192,7 @@ OTHER_BOT_TARIFF_NAME = "Standart"
 
 
 def get_bot_tariff(info: dict) -> dict:
-    if info.get("type") == "kino":
+    if info.get("type") in ("kino", "kino_ultra"):
         return get_tariff(info.get("tariff", "2"))
     return {"name": OTHER_BOT_TARIFF_NAME, "price": data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE), "daily_limit": None}
 
@@ -868,15 +869,22 @@ def types_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def tariff_kb():
+def tariff_kb(only_ids=None):
+    items = data["tariffs"].items()
+    if only_ids:
+        items = [(tid, t) for tid, t in items if tid in only_ids]
     buttons = [
         [InlineKeyboardButton(
             text=f"{t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})",
             callback_data=f"tariff_{tid}",
         )]
-        for tid, t in data["tariffs"].items()
+        for tid, t in items
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# Kino Ultra Premium faqat eng yuqori 3 tarif orqali sotib olinadi
+ULTRA_TARIFF_IDS = ("3", "4", "5")
 
 
 def contact_admin_kb():
@@ -1297,7 +1305,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     def type_detail_text(bot_type: str) -> str:
         desc = BOT_DESCRIPTIONS.get(bot_type, "")
-        if bot_type == "kino":
+        if bot_type in ("kino", "kino_ultra"):
             price_line = "💰 Oylik to'lov: tarifga qarab belgilanadi"
         else:
             price_line = f"💰 Oylik to'lov: {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy"
@@ -1311,14 +1319,17 @@ def setup_platform_bot(dp: Dispatcher):
 
     def type_detail_kb(bot_type: str):
         buttons = []
-        if bot_type == "kino":
+        if bot_type in ("kino", "kino_ultra"):
             buttons.append([InlineKeyboardButton(text="💳 Tariflar ro'yxati", callback_data=f"tariffpreview_{bot_type}")])
         buttons.append([InlineKeyboardButton(text="✅ Bot yaratish — Bepul", callback_data=f"createbot_{bot_type}")])
         buttons.append([InlineKeyboardButton(text="◀️ Orqaga", callback_data="backtotypes")])
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     def tariff_preview_text(bot_type: str) -> str:
-        cards = "\n\n".join(tariff_card_text(tid, t) for tid, t in data["tariffs"].items())
+        items = data["tariffs"].items()
+        if bot_type == "kino_ultra":
+            items = [(tid, t) for tid, t in items if tid in ULTRA_TARIFF_IDS]
+        cards = "\n\n".join(tariff_card_text(tid, t) for tid, t in items)
         return f"{BOT_TYPES[bot_type]} — Tariflar\n\n{cards}"
 
     def tariff_preview_kb(bot_type: str):
@@ -1410,7 +1421,7 @@ def setup_platform_bot(dp: Dispatcher):
             await state.clear()
             return
 
-        if bot_type != "kino":
+        if bot_type not in ("kino", "kino_ultra"):
             # Kino'dan boshqa botlar — tarifsiz, yagona narx, tanlash shart emas
             info = await finalize_bot_creation(token, me.first_name, bot_type, message.from_user.id, None)
             tariff = get_bot_tariff(info)
@@ -1425,9 +1436,10 @@ def setup_platform_bot(dp: Dispatcher):
 
         await state.update_data(token=token, bot_name=me.first_name)
         await state.set_state(NewBotFlow.waiting_tariff)
+        only_ids = ULTRA_TARIFF_IDS if bot_type == "kino_ultra" else None
         await message.answer(
             f"✅ Bot topildi: <b>{me.first_name}</b>\n\n{BOT_TYPES[bot_type]} uchun tarifni tanlang:",
-            reply_markup=tariff_kb(),
+            reply_markup=tariff_kb(only_ids),
         )
 
     @dp.callback_query(NewBotFlow.waiting_tariff, F.data.startswith("tariff_"))
@@ -1682,16 +1694,17 @@ def setup_platform_bot(dp: Dispatcher):
         if not target or callback.from_user.id not in target.get("admin_ids", [target["admin_id"]]):
             await callback.answer("Ruxsat yo'q.", show_alert=True)
             return
-        if target["type"] != "kino":
+        if target["type"] not in ("kino", "kino_ultra"):
             await callback.answer("Bu bot turi uchun tarif tanlash mavjud emas — narx doim bir xil.", show_alert=True)
             return
         current_tariff = target.get("tariff", "2")
+        allowed_ids = ULTRA_TARIFF_IDS if target["type"] == "kino_ultra" else data["tariffs"].keys()
         buttons = [
             [InlineKeyboardButton(
                 text=("✅ " if tid == current_tariff else "") + f"{t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})",
                 callback_data=f"settariff_{bot_id}_{tid}",
             )]
-            for tid, t in data["tariffs"].items()
+            for tid, t in data["tariffs"].items() if tid in allowed_ids
         ]
         await callback.message.answer(
             f"🔄 <b>{target['name']}</b> uchun yangi tarifni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
