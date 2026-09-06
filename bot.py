@@ -281,6 +281,8 @@ BOT_DESCRIPTIONS = {
 }
 
 def is_active(info: dict) -> bool:
+    if info.get("admin_id") == ADMIN_ID:
+        return True  # Platforma egasi yaratgan botlar — umrbod, hech qachon to'lov so'ralmaydi
     paid_until = info.get("paid_until")
     if paid_until and datetime.now() < datetime.fromisoformat(paid_until):
         return True
@@ -381,6 +383,7 @@ class AddSeries(StatesGroup):
     waiting_code = State()
     waiting_title = State()
     waiting_desc = State()
+    waiting_count = State()
     waiting_episode = State()
 
 
@@ -405,6 +408,10 @@ class PremiumTariffAdd(StatesGroup):
 
 class PremiumPurchase(StatesGroup):
     waiting_check = State()
+
+
+class PremiumGrant(StatesGroup):
+    waiting_user = State()
 
 
 class TopUpFlow(StatesGroup):
@@ -1658,10 +1665,7 @@ def setup_platform_bot(dp: Dispatcher):
     @dp.message(F.text == "📁 Botlarim")
     async def mybots(message: Message):
         uid = message.from_user.id
-        if uid == ADMIN_ID:
-            items = list(data["bots"].items())
-        else:
-            items = [(t, i) for t, i in data["bots"].items() if uid in i.get("admin_ids", [i["admin_id"]])]
+        items = [(t, i) for t, i in data["bots"].items() if uid in i.get("admin_ids", [i["admin_id"]])]
 
         if not items:
             await message.answer("Hali botlaringiz yo'q. /newbot orqali yarating.")
@@ -1670,7 +1674,9 @@ def setup_platform_bot(dp: Dispatcher):
         for token, info in items:
             status = "🟢 Faol" if is_active(info) else "🔴 Sinov/to'lov tugagan"
             paid_until = info.get("paid_until")
-            if paid_until:
+            if info.get("admin_id") == ADMIN_ID:
+                paid_note = " (umrbod)"
+            elif paid_until:
                 date_str = datetime.fromisoformat(paid_until).strftime("%d.%m.%Y")
                 paid_note = f" (to'langan: {date_str} gacha)"
             else:
@@ -1680,16 +1686,9 @@ def setup_platform_bot(dp: Dispatcher):
                 f"{BOT_TYPES.get(info['type'])}: <b>{info['name']}</b>\n{status}{paid_note}\n"
                 f"💠 Tarif: {tariff['name']} ({tariff_limit_text(tariff)})"
             )
-            if uid == ADMIN_ID and info["admin_id"] != ADMIN_ID:
-                text += f"\n👤 Egasi ID: {info['admin_id']}"
             buttons = []
-            if uid == ADMIN_ID:
-                amount = next_payment_amount(info)
-                buttons.append([InlineKeyboardButton(text=f"✅ To'lovni tasdiqlash ({amount:,} so'm)", callback_data=f"activate_{info['id']}")])
-                if info.get("paid_until"):
-                    buttons.append([InlineKeyboardButton(text="❌ Tasdiqdan chiqarish", callback_data=f"deactivate_{info['id']}")])
-            if uid in info.get("admin_ids", [info["admin_id"]]):
-                if info["type"] == "kino":
+            if info.get("admin_id") != ADMIN_ID:
+                if info["type"] in ("kino", "kino_ultra"):
                     buttons.append([InlineKeyboardButton(text="🔄 Tarifni o'zgartirish", callback_data=f"changetariff_{info['id']}")])
                 buttons.append([InlineKeyboardButton(text="💰 Hozir to'lov qilish", callback_data=f"paynow_{info['id']}")])
             kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
@@ -1887,6 +1886,7 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
     info.setdefault("payment_systems", {})
     info.setdefault("premium_tariffs", {})
     info.setdefault("premium_users", {})
+    info.setdefault("premium_stats", {})
     info.setdefault("premium_enabled", False)
 
     # ---------- To'lov tizimlari (admin) ----------
@@ -1989,6 +1989,8 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
         if info["premium_tariffs"]:
             buttons.append([InlineKeyboardButton(text="📋 Ro'yxat", callback_data="pt_list")])
             buttons.append([InlineKeyboardButton(text="➖ O'chirish", callback_data="pt_del")])
+            buttons.append([InlineKeyboardButton(text="🎁 Premium berish", callback_data="pt_grant")])
+        buttons.append([InlineKeyboardButton(text="📊 VIP Statistika", callback_data="pt_vipstats")])
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     @dp.message(F.text == "💎 Premium")
@@ -2007,6 +2009,122 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
         status = "✅ Yoqilgan" if info["premium_enabled"] else "❌ O'chirilgan"
         await callback.message.edit_text(f"💎 Premium tariflar boshqaruvi\n\nHolati: {status}", reply_markup=premium_admin_kb())
         await callback.answer("Saqlandi!")
+
+    # ---------- Premium berish (admin tomonidan qo'lda, to'lovsiz) ----------
+    @dp.callback_query(F.data == "pt_grant")
+    async def pt_grant_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        if not info["premium_tariffs"]:
+            await callback.answer("Avval kamida bitta tarif qo'shing.", show_alert=True)
+            return
+        buttons = [
+            [InlineKeyboardButton(text=f"{t['name']} — {t['days']} kun", callback_data=f"ptgranttariff_{tid}")]
+            for tid, t in info["premium_tariffs"].items()
+        ]
+        await callback.message.answer("Qaysi tarifni bermoqchisiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("ptgranttariff_"))
+    async def pt_grant_tariff_cb(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            return
+        tid = callback.data.split("_", 1)[1]
+        tariff = info["premium_tariffs"].get(tid)
+        if not tariff:
+            await callback.answer("❌ Tarif topilmadi.", show_alert=True)
+            return
+        await state.update_data(grant_tariff_id=tid)
+        await callback.message.answer(
+            f"Tanlangan tarif: {tariff['name']} ({tariff['days']} kun)\n\n"
+            "Endi foydalanuvchining ID raqamini yoki @username'ini yuboring:"
+        )
+        await state.set_state(PremiumGrant.waiting_user)
+        await callback.answer()
+
+    @dp.message(PremiumGrant.waiting_user)
+    async def pt_grant_user(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        raw = message.text.strip()
+        target_uid = None
+        if raw.startswith("@"):
+            try:
+                chat = await message.bot.get_chat(raw)
+                target_uid = chat.id
+            except Exception:
+                await message.answer("❌ Bu username bo'yicha foydalanuvchi topilmadi. ID raqamini yuborib ko'ring.")
+                return
+        else:
+            try:
+                target_uid = int(raw)
+            except ValueError:
+                await message.answer("❌ ID raqam yoki @username ko'rinishida yuboring.")
+                return
+
+        fsm_data = await state.get_data()
+        tid = fsm_data.get("grant_tariff_id")
+        tariff = info["premium_tariffs"].get(tid)
+        if not tariff:
+            await message.answer("❌ Xatolik: tarif topilmadi.")
+            await state.clear()
+            return
+
+        until = datetime.now() + timedelta(days=tariff["days"])
+        existing = info["premium_users"].get(str(target_uid))
+        if existing:
+            try:
+                existing_until = datetime.fromisoformat(existing["until"])
+                if existing_until > datetime.now():
+                    until = existing_until + timedelta(days=tariff["days"])
+            except Exception:
+                pass
+        info["premium_users"][str(target_uid)] = {"until": until.isoformat()}
+        save_data()
+
+        await message.answer(
+            f"✅ Premium berildi!\n\n👤 Foydalanuvchi: <code>{target_uid}</code>\n"
+            f"💎 Tarif: {tariff['name']}\n📅 Muddati: {until.strftime('%d.%m.%Y')} gacha"
+        )
+        try:
+            await message.bot.send_message(
+                target_uid,
+                f"🎁 <b>Sizga Premium obuna berildi!</b>\n\n"
+                f"💎 Tarif: {tariff['name']}\n📅 Muddati: {until.strftime('%d.%m.%Y')} gacha\n\n"
+                "Endi cheklovlarsiz foydalanishingiz mumkin! 🎉",
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga Premium xabarini yuborishda xato: {e}")
+        await state.clear()
+
+    # ---------- VIP Statistika ----------
+    @dp.callback_query(F.data == "pt_vipstats")
+    async def pt_vipstats_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        now = datetime.now()
+        active = 0
+        for u in info["premium_users"].values():
+            try:
+                if datetime.fromisoformat(u["until"]) > now:
+                    active += 1
+            except Exception:
+                pass
+        total_revenue = sum(s.get("revenue", 0) for s in info.get("premium_stats", {}).values())
+        lines = [
+            "💎 <b>VIP Obuna Statistikasi</b>\n",
+            f"🔹 Faol VIP foydalanuvchilar: {active} ta",
+            f"💰 Jami VIP daromad: {total_revenue:,} so'm\n",
+            "📈 <b>Tariflar bo'yicha tushumlar:</b>",
+        ]
+        if not info["premium_tariffs"]:
+            lines.append("(hozircha tarif qo'shilmagan)")
+        else:
+            for tid, t in info["premium_tariffs"].items():
+                s = info.get("premium_stats", {}).get(tid, {"count": 0, "revenue": 0})
+                lines.append(f"▪️ {t['name']} ({t['price']:,} so'm): {s['count']} ta ({s['revenue']:,} so'm)")
+        await callback.message.answer("\n".join(lines))
+        await callback.answer()
 
     @dp.callback_query(F.data == "pt_add")
     async def pt_add_cb(callback: CallbackQuery, state: FSMContext):
@@ -2224,6 +2342,9 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             return
         until = datetime.now() + timedelta(days=tariff["days"])
         info["premium_users"][str(target_uid)] = {"until": until.isoformat()}
+        stat = info["premium_stats"].setdefault(tid, {"count": 0, "revenue": 0})
+        stat["count"] += 1
+        stat["revenue"] += tariff["price"]
         save_data()
         try:
             await callback.bot.send_message(
@@ -2275,6 +2396,9 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             return
         until = datetime.now() + timedelta(days=tariff["days"])
         info["premium_users"][str(message.from_user.id)] = {"until": until.isoformat()}
+        stat = info["premium_stats"].setdefault(tid, {"count": 0, "revenue": 0})
+        stat["count"] += 1
+        stat["revenue"] += tariff["price"]
         save_data()
         await message.answer(
             "✅ <b>To'lov muvaffaqiyatli qabul qilindi!</b>\n\n"
@@ -2369,29 +2493,29 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     @dp.message(AddSeries.waiting_desc)
     async def addseries_desc(message: Message, state: FSMContext):
         await state.update_data(desc=message.text.strip(), episodes={})
+        await message.answer("Jami nechta qism/serial bor? (faqat raqam, masalan: 10):")
+        await state.set_state(AddSeries.waiting_count)
+
+    @dp.message(AddSeries.waiting_count)
+    async def addseries_count(message: Message, state: FSMContext):
+        try:
+            count = int(message.text.strip())
+            if count <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting (masalan: 10).")
+            return
+        await state.update_data(expected_count=count)
         await message.answer(
-            "Endi 1-qism videosini yuboring.\n"
-            "Har bir videoni ketma-ket yuboraverasiz (avtomatik 1, 2, 3... deb raqamlanadi).\n"
-            "Barcha qismlarni yuborib bo'lgach, /done deb yozing."
+            f"Jami <b>{count}</b> qism kutilmoqda.\n\n"
+            "Endi 1-qism videosini yuboring. Har bir videoni ketma-ket yuboraverasiz "
+            f"(avtomatik 1, 2, 3... deb raqamlanadi) — {count}-qism yuborilgach, bot avtomatik saqlaydi.\n"
+            "Xohlasangiz, tugatish uchun /done ham yozishingiz mumkin."
         )
         await state.set_state(AddSeries.waiting_episode)
 
-    @dp.message(AddSeries.waiting_episode, F.video)
-    async def addseries_episode(message: Message, state: FSMContext):
-        state_data = await state.get_data()
+    async def finalize_series(message: Message, state: FSMContext, state_data: dict):
         episodes = state_data.get("episodes", {})
-        next_num = len(episodes) + 1
-        episodes[str(next_num)] = message.video.file_id
-        await state.update_data(episodes=episodes)
-        await message.answer(f"✅ {next_num}-qism saqlandi. Davom eting yoki /done deb tugating.")
-
-    @dp.message(AddSeries.waiting_episode, Command("done"))
-    async def addseries_done(message: Message, state: FSMContext):
-        state_data = await state.get_data()
-        episodes = state_data.get("episodes", {})
-        if not episodes:
-            await message.answer("❌ Kamida bitta qism yuborishingiz kerak.")
-            return
         code = state_data["code"]
         info["movies"][code] = {
             "type": "series",
@@ -2404,6 +2528,28 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             f"✅ Serial saqlandi: <b>{state_data['title']}</b> ({len(episodes)} qism), Kod: {code}"
         )
         await state.clear()
+
+    @dp.message(AddSeries.waiting_episode, F.video)
+    async def addseries_episode(message: Message, state: FSMContext):
+        state_data = await state.get_data()
+        episodes = state_data.get("episodes", {})
+        next_num = len(episodes) + 1
+        episodes[str(next_num)] = message.video.file_id
+        await state.update_data(episodes=episodes)
+        expected = state_data.get("expected_count")
+        if expected and next_num >= expected:
+            state_data["episodes"] = episodes
+            await finalize_series(message, state, state_data)
+            return
+        await message.answer(f"✅ {next_num}/{expected or '?'}-qism saqlandi. Davom eting yoki /done deb tugating.")
+
+    @dp.message(AddSeries.waiting_episode, Command("done"))
+    async def addseries_done(message: Message, state: FSMContext):
+        state_data = await state.get_data()
+        if not state_data.get("episodes"):
+            await message.answer("❌ Kamida bitta qism yuborishingiz kerak.")
+            return
+        await finalize_series(message, state, state_data)
 
     @dp.message(AddSeries.waiting_episode)
     async def addseries_wrong(message: Message):
@@ -4265,29 +4411,29 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
     @dp.message(AddSeries.waiting_desc)
     async def addseries_desc(message: Message, state: FSMContext):
         await state.update_data(desc=message.text.strip(), episodes={})
+        await message.answer("Jami nechta qism/serial bor? (faqat raqam, masalan: 10):")
+        await state.set_state(AddSeries.waiting_count)
+
+    @dp.message(AddSeries.waiting_count)
+    async def addseries_count(message: Message, state: FSMContext):
+        try:
+            count = int(message.text.strip())
+            if count <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting (masalan: 10).")
+            return
+        await state.update_data(expected_count=count)
         await message.answer(
-            "Endi 1-qism videosini yuboring.\n"
-            "Har bir videoni ketma-ket yuboraverasiz (avtomatik 1, 2, 3... deb raqamlanadi).\n"
-            "Barcha qismlarni yuborib bo'lgach, /done deb yozing."
+            f"Jami <b>{count}</b> qism kutilmoqda.\n\n"
+            "Endi 1-qism videosini yuboring. Har bir videoni ketma-ket yuboraverasiz "
+            f"(avtomatik 1, 2, 3... deb raqamlanadi) — {count}-qism yuborilgach, bot avtomatik saqlaydi.\n"
+            "Xohlasangiz, tugatish uchun /done ham yozishingiz mumkin."
         )
         await state.set_state(AddSeries.waiting_episode)
 
-    @dp.message(AddSeries.waiting_episode, F.video)
-    async def addseries_episode(message: Message, state: FSMContext):
-        state_data = await state.get_data()
+    async def finalize_series(message: Message, state: FSMContext, state_data: dict):
         episodes = state_data.get("episodes", {})
-        next_num = len(episodes) + 1
-        episodes[str(next_num)] = message.video.file_id
-        await state.update_data(episodes=episodes)
-        await message.answer(f"✅ {next_num}-qism saqlandi. Davom eting yoki /done deb tugating.")
-
-    @dp.message(AddSeries.waiting_episode, Command("done"))
-    async def addseries_done(message: Message, state: FSMContext):
-        state_data = await state.get_data()
-        episodes = state_data.get("episodes", {})
-        if not episodes:
-            await message.answer("❌ Kamida bitta qism yuborishingiz kerak.")
-            return
         code = state_data["code"]
         info["movies"][code] = {
             "type": "series",
@@ -4300,6 +4446,28 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
             await notify_new_content(message.bot, f"📺 Yangi serial qo'shildi: {state_data['title']} (Kod: {code})")
         await message.answer(f"✅ Serial saqlandi: <b>{state_data['title']}</b> ({len(episodes)} qism), Kod: {code}")
         await state.clear()
+
+    @dp.message(AddSeries.waiting_episode, F.video)
+    async def addseries_episode(message: Message, state: FSMContext):
+        state_data = await state.get_data()
+        episodes = state_data.get("episodes", {})
+        next_num = len(episodes) + 1
+        episodes[str(next_num)] = message.video.file_id
+        await state.update_data(episodes=episodes)
+        expected = state_data.get("expected_count")
+        if expected and next_num >= expected:
+            state_data["episodes"] = episodes
+            await finalize_series(message, state, state_data)
+            return
+        await message.answer(f"✅ {next_num}/{expected or '?'}-qism saqlandi. Davom eting yoki /done deb tugating.")
+
+    @dp.message(AddSeries.waiting_episode, Command("done"))
+    async def addseries_done(message: Message, state: FSMContext):
+        state_data = await state.get_data()
+        if not state_data.get("episodes"):
+            await message.answer("❌ Kamida bitta qism yuborishingiz kerak.")
+            return
+        await finalize_series(message, state, state_data)
 
     @dp.message(AddSeries.waiting_episode)
     async def addseries_wrong(message: Message):
