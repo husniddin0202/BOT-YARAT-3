@@ -493,6 +493,10 @@ class StarUnblockUser(StatesGroup):
     waiting_id = State()
 
 
+class WelcomeFlow(StatesGroup):
+    waiting_text = State()
+
+
 def is_admin(info: dict, uid: int) -> bool:
     return uid in info.get("admin_ids", [info.get("admin_id")])
 
