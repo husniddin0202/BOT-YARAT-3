@@ -213,8 +213,7 @@ def tariff_card_text(tid: str, t: dict) -> str:
     return (
         f"<b>{t['name']}</b>\n"
         f"┣ 💵 Narxi: {t['price']:,} so'm/oy ({daily_price:,} so'm/kun)\n"
-        f"┣ {users_line}\n"
-        f"┗ ⚡ Javob tezligi: {t.get('speed', '-')}"
+        f"┗ {users_line}"
     )
 
 
@@ -354,6 +353,12 @@ class NewPlatformFlow(StatesGroup):
 
 class EditPrice(StatesGroup):
     waiting_amount = State()
+
+
+class NewTariffAdd(StatesGroup):
+    waiting_name = State()
+    waiting_price = State()
+    waiting_limit = State()
 
 
 class EditRate(StatesGroup):
@@ -1499,6 +1504,8 @@ def setup_platform_bot(dp: Dispatcher):
             )]
             for tid, t in data["tariffs"].items()
         ]
+        buttons.append([InlineKeyboardButton(text="➕ Tarif qo'shish", callback_data="addtariff")])
+        buttons.append([InlineKeyboardButton(text="➖ Tarif o'chirish", callback_data="deltariff")])
         buttons.append([InlineKeyboardButton(
             text=f"🤖 Boshqa botlar — {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy",
             callback_data="editotherprice",
@@ -1509,6 +1516,87 @@ def setup_platform_bot(dp: Dispatcher):
             "Narxini o'zgartirish uchun tanlang:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
+
+    @dp.callback_query(F.data == "addtariff")
+    async def addtariff_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        await callback.message.answer("Yangi tarif nomini kiriting (masalan: 🚀 Mega):")
+        await state.set_state(NewTariffAdd.waiting_name)
+        await callback.answer()
+
+    @dp.message(NewTariffAdd.waiting_name)
+    async def addtariff_name(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.update_data(new_tariff_name=message.text.strip())
+        await message.answer("Oylik narxini kiriting (so'm, faqat raqam):")
+        await state.set_state(NewTariffAdd.waiting_price)
+
+    @dp.message(NewTariffAdd.waiting_price)
+    async def addtariff_price(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        try:
+            price = int(message.text.strip().replace(" ", ""))
+            if price <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        await state.update_data(new_tariff_price=price)
+        await message.answer("Kunlik foydalanuvchi limitini kiriting (cheksiz bo'lsa 0 yozing):")
+        await state.set_state(NewTariffAdd.waiting_limit)
+
+    @dp.message(NewTariffAdd.waiting_limit)
+    async def addtariff_limit(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        try:
+            limit = int(message.text.strip().replace(" ", ""))
+            if limit < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ 0 yoki musbat butun raqam kiriting.")
+            return
+        fsm_data = await state.get_data()
+        new_id = str(max((int(k) for k in data["tariffs"].keys() if k.isdigit()), default=0) + 1)
+        data["tariffs"][new_id] = {
+            "name": fsm_data["new_tariff_name"],
+            "price": fsm_data["new_tariff_price"],
+            "daily_limit": None if limit == 0 else limit,
+        }
+        save_data()
+        await message.answer(f"✅ Yangi tarif qo'shildi: {fsm_data['new_tariff_name']} — {fsm_data['new_tariff_price']:,} so'm/oy")
+        await state.clear()
+
+    @dp.callback_query(F.data == "deltariff")
+    async def deltariff_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        if len(data["tariffs"]) <= 1:
+            await callback.answer("Kamida bitta tarif qolishi kerak.", show_alert=True)
+            return
+        buttons = [
+            [InlineKeyboardButton(text=f"{t['name']} — {t['price']:,} so'm/oy", callback_data=f"deltariffid_{tid}")]
+            for tid, t in data["tariffs"].items()
+        ]
+        await callback.message.answer("O'chirmoqchi bo'lgan tarifni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("deltariffid_"))
+    async def deltariffid_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        if len(data["tariffs"]) <= 1:
+            await callback.answer("Kamida bitta tarif qolishi kerak.", show_alert=True)
+            return
+        tid = callback.data.split("_", 1)[1]
+        removed = data["tariffs"].pop(tid, None)
+        save_data()
+        if removed:
+            await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
+        await callback.answer()
 
     @dp.callback_query(F.data == "editotherprice")
     async def editotherprice_cb(callback: CallbackQuery, state: FSMContext):
@@ -4192,6 +4280,14 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
     info.setdefault("maintenance_mode", False)
     info.setdefault("welcome_text", "🎬 Film kodini yuboring, men uni topib beraman.")
     info.setdefault("help_text", "Savol va takliflar uchun admin bilan bog'laning.")
+    info.setdefault("ratings", {})                 # {code: {"total": int, "count": int, "by_user": {uid: stars}}}
+    info.setdefault("vip_codes", [])               # [code, ...] — faqat Premium foydalanuvchilar uchun
+    info.setdefault("series_subscribers", {})      # {code: [uid, ...]}
+    info.setdefault("moderators", [])              # faqat kontent qo'sha oladigan cheklangan adminlar
+    info.setdefault("user_activity", {})           # {str(uid): count}
+    info.setdefault("auto_report_enabled", False)
+    info.setdefault("auto_report_hour", 9)
+    info.setdefault("last_report_date", "")
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
     setup_premium_system(dp, token, admin_id)
@@ -4199,6 +4295,12 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
 
     def is_blocked(uid: int) -> bool:
         return uid in info.get("blocked_users", [])
+
+    def is_moderator(uid: int) -> bool:
+        return is_admin(info, uid) or uid in info.get("moderators", [])
+
+    def is_premium_user(uid: int) -> bool:
+        return is_admin(info, uid) or is_premium_active(info, uid)
 
     # ---------- Klaviaturalar ----------
     def ultra_admin_kb():
@@ -4209,14 +4311,17 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
             [KeyboardButton(text="🎁 Referal"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
             [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
-            [KeyboardButton(text="⚙️ Sozlamalar"), KeyboardButton(text="📤 Eksport")],
+            [KeyboardButton(text="👮 Moderatorlar"), KeyboardButton(text="⚙️ Sozlamalar")],
+            [KeyboardButton(text="📤 Eksport")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def content_menu_kb():
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="🎬 Film qo'shish"), KeyboardButton(text="📺 Serial qo'shish")],
-            [KeyboardButton(text="📋 Filmlar ro'yxati"), KeyboardButton(text="🔍 Kod bo'yicha qidirish")],
-            [KeyboardButton(text="✏️ Tavsifni tahrirlash"), KeyboardButton(text="🗑 Film o'chirish")],
+            [KeyboardButton(text="➕ Seriallarga qism qo'shish"), KeyboardButton(text="📋 Filmlar ro'yxati")],
+            [KeyboardButton(text="🔍 Kod bo'yicha qidirish"), KeyboardButton(text="✏️ Tavsifni tahrirlash")],
+            [KeyboardButton(text="🗑 Film o'chirish")],
+            [KeyboardButton(text="🔒 VIP qilib belgilash"), KeyboardButton(text="🗓 Chiqish sanasini belgilash")],
             [KeyboardButton(text="◀️ Orqaga")],
         ], resize_keyboard=True)
 
@@ -4237,6 +4342,7 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
     def top_menu_kb():
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="🔥 Eng ko'p so'ralganlar"), KeyboardButton(text="📅 Bugungi faollik")],
+            [KeyboardButton(text="⭐ Reytinglar"), KeyboardButton(text="🏆 Faol foydalanuvchilar")],
             [KeyboardButton(text="◀️ Orqaga")],
         ], resize_keyboard=True)
 
@@ -4261,16 +4367,25 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
             [KeyboardButton(text="◀️ Orqaga")],
         ], resize_keyboard=True)
 
+    def moderators_menu_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="➕ Moderator qo'shish"), KeyboardButton(text="📋 Moderatorlar ro'yxati")],
+            [KeyboardButton(text="➖ Moderatorni o'chirish")],
+            [KeyboardButton(text="◀️ Orqaga")],
+        ], resize_keyboard=True)
+
     def settings_menu_kb():
         return ReplyKeyboardMarkup(keyboard=[
             [KeyboardButton(text="✏️ Salomlashuv matni"), KeyboardButton(text="📄 Yordam matni")],
             [KeyboardButton(text="🔔 Yangi kontent bildirishnomasi"), KeyboardButton(text="🛠 Texnik tanaffus")],
+            [KeyboardButton(text="📅 Avtomatik hisobot")],
             [KeyboardButton(text="◀️ Orqaga")],
         ], resize_keyboard=True)
 
     BACK_BUTTONS = {
         "🎬 Kontent", "🏷 Kategoriyalar", "⭐ Tavsiyalar", "📈 TOP reyting",
         "👥 Foydalanuvchilar", "📢 Xabar va reklama", "🎁 Referal", "⚙️ Sozlamalar",
+        "👮 Moderatorlar",
     }
 
     @dp.message(F.text == "◀️ Orqaga")
@@ -4373,21 +4488,21 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
     # ---------- Kontent submenu ----------
     @dp.message(F.text == "🎬 Kontent")
     async def content_panel(message: Message):
-        if not is_admin(info, message.from_user.id):
+        if not is_moderator(message.from_user.id):
             return
         await message.answer("🎬 <b>Kontent boshqaruvi</b>", reply_markup=content_menu_kb())
 
     @dp.message(Command("addmovie"))
     @dp.message(F.text == "🎬 Film qo'shish")
     async def addmovie_cmd(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
+        if not is_moderator(message.from_user.id):
             return
         await message.answer("Kino kodini yuboring (faqat raqam, masalan: 40):")
         await state.set_state(AddMovie.waiting_code)
 
     @dp.message(F.text == "📺 Serial qo'shish")
     async def addseries_cmd(message: Message, state: FSMContext):
-        if not is_admin(info, message.from_user.id):
+        if not is_moderator(message.from_user.id):
             return
         await message.answer("Serial kodini yuboring (faqat raqam, masalan: 41):")
         await state.set_state(AddSeries.waiting_code)
@@ -4398,6 +4513,10 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
         if not code.isdigit():
             await message.answer("❌ Kod faqat raqamlardan iborat bo'lishi kerak. Qaytadan yuboring:")
             return
+        existing = info["movies"].get(code)
+        if existing:
+            name = existing.get("title") or existing.get("desc", "-")[:30]
+            await message.answer(f"⚠️ Kod {code} allaqachon band: <b>{name}</b>. Davom etsangiz, u almashtiriladi.")
         await state.update_data(code=code)
         await message.answer("Serial nomini yozing (masalan: Umar ibn Xattob):")
         await state.set_state(AddSeries.waiting_title)
@@ -4517,6 +4636,10 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
         if not code.isdigit():
             await message.answer("❌ Kod faqat raqamlardan iborat bo'lishi kerak. Qaytadan yuboring:")
             return
+        existing = info["movies"].get(code)
+        if existing:
+            name = existing.get("title") or existing.get("desc", "-")[:30]
+            await message.answer(f"⚠️ Kod {code} allaqachon band: <b>{name}</b>. Davom etsangiz, u almashtiriladi.")
         await state.update_data(code=code)
         await message.answer("Endi kino haqida qisqacha tavsif yozing (janr, yil, va h.k.):")
         await state.set_state(AddMovie.waiting_desc)
