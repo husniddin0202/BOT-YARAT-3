@@ -419,6 +419,18 @@ class PremiumGrant(StatesGroup):
     waiting_user = State()
 
 
+class AppendEpisode(StatesGroup):
+    waiting_video = State()
+
+
+class ScheduleRelease(StatesGroup):
+    waiting_datetime = State()
+
+
+class ModeratorAdd(StatesGroup):
+    waiting_id = State()
+
+
 class TopUpFlow(StatesGroup):
     waiting_amount = State()
     waiting_check = State()
@@ -4592,7 +4604,7 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
     async def addseries_wrong(message: Message):
         await message.answer("❌ Video yuboring yoki barcha qismlar tugagan bo'lsa /done deb yozing.")
 
-    async def send_series_episode(send_func, series: dict, code: str, ep_num: int):
+    async def send_series_episode(send_func, series: dict, code: str, ep_num: int, uid: int = None):
         episodes = series["episodes"]
         sorted_eps = sorted(int(k) for k in episodes.keys())
         total = len(sorted_eps)
@@ -4616,8 +4628,25 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
         next_ep = ep_num + 1
         if next_ep in sorted_eps:
             buttons.append([InlineKeyboardButton(text="Keyingi ▶️", callback_data=f"ep_{code}_{next_ep}")])
+        if uid is not None:
+            subs = info["series_subscribers"].get(code, [])
+            sub_label = "🔕 Obunani bekor qilish" if uid in subs else "🔔 Yangi qismga obuna bo'lish"
+            buttons.append([InlineKeyboardButton(text=sub_label, callback_data=f"subep_{code}")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await send_func(file_id, caption=caption, reply_markup=kb)
+
+    @dp.callback_query(F.data.startswith("subep_"))
+    async def subscribe_episode_cb(callback: CallbackQuery):
+        code = callback.data.split("_", 1)[1]
+        uid = callback.from_user.id
+        subs = info["series_subscribers"].setdefault(code, [])
+        if uid in subs:
+            subs.remove(uid)
+            await callback.answer("🔕 Obuna bekor qilindi.")
+        else:
+            subs.append(uid)
+            await callback.answer("🔔 Endi yangi qism chiqsa xabar beramiz!")
+        save_data()
 
     @dp.callback_query(F.data.startswith("ep_"))
     async def episode_nav_cb(callback: CallbackQuery):
@@ -4627,7 +4656,7 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
         if not series or series.get("type") != "series":
             await callback.answer("Topilmadi.", show_alert=True)
             return
-        await send_series_episode(callback.message.answer_video, series, code, num)
+        await send_series_episode(callback.message.answer_video, series, code, num, uid=callback.from_user.id)
         await callback.answer()
 
     @dp.message(AddMovie.waiting_code)
@@ -4770,6 +4799,230 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
         if removed:
             await callback.message.answer(f"🗑 Kod {code} o'chirildi.")
         await callback.answer()
+
+    # ---------- Seriallarga qism qo'shish ----------
+    @dp.message(F.text == "➕ Seriallarga qism qo'shish")
+    async def append_episode_start(message: Message):
+        if not is_moderator(message.from_user.id):
+            return
+        series_list = {c: m for c, m in info["movies"].items() if m.get("type") == "series"}
+        if not series_list:
+            await message.answer("Hozircha seriallar yo'q.")
+            return
+        buttons = [[InlineKeyboardButton(text=f"{m['title']} (Kod {c})", callback_data=f"appendep_{c}")] for c, m in series_list.items()]
+        await message.answer("Qaysi serialga yangi qism qo'shamiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("appendep_"))
+    async def append_episode_pick(callback: CallbackQuery, state: FSMContext):
+        code = callback.data.split("_", 1)[1]
+        await state.update_data(append_code=code)
+        await callback.message.answer("Yangi qism videosini yuboring:")
+        await state.set_state(AppendEpisode.waiting_video)
+        await callback.answer()
+
+    @dp.message(AppendEpisode.waiting_video, F.video)
+    async def append_episode_video(message: Message, state: FSMContext):
+        fsm_data = await state.get_data()
+        code = fsm_data.get("append_code")
+        series = info["movies"].get(code)
+        if not series:
+            await message.answer("❌ Serial topilmadi.")
+            await state.clear()
+            return
+        next_num = len(series["episodes"]) + 1
+        series["episodes"][str(next_num)] = message.video.file_id
+        save_data()
+        await message.answer(f"✅ {next_num}-qism qo'shildi: <b>{series['title']}</b>")
+        subs = info["series_subscribers"].get(code, [])
+        for uid in subs:
+            try:
+                await message.bot.send_message(uid, f"🔔 <b>{series['title']}</b> — yangi {next_num}-qism chiqdi! Kod: {code}")
+            except Exception:
+                pass
+        await state.clear()
+
+    @dp.message(AppendEpisode.waiting_video)
+    async def append_episode_wrong(message: Message):
+        await message.answer("❌ Video yuboring.")
+
+    # ---------- VIP kontent ----------
+    @dp.message(F.text == "🔒 VIP qilib belgilash")
+    async def vip_mark_start(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["movies"]:
+            await message.answer("Kontent yo'q.")
+            return
+        buttons = []
+        for code, m in info["movies"].items():
+            mark = "🔒" if code in info["vip_codes"] else "🔓"
+            name = m.get("title") or m.get("desc", "-")[:25]
+            buttons.append([InlineKeyboardButton(text=f"{mark} Kod {code} — {name}", callback_data=f"vipmark_{code}")])
+        await message.answer("Bosish orqali VIP holatini yoqing/o'chiring:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("vipmark_"))
+    async def vip_mark_toggle(callback: CallbackQuery):
+        code = callback.data.split("_", 1)[1]
+        if code in info["vip_codes"]:
+            info["vip_codes"].remove(code)
+            status = "🔓 Ochiq (VIP emas)"
+        else:
+            info["vip_codes"].append(code)
+            status = "🔒 VIP-maxsus"
+        save_data()
+        await callback.answer(f"Kod {code}: {status}", show_alert=True)
+
+    # ---------- Rejalashtirilgan chiqarish ----------
+    @dp.message(F.text == "🗓 Chiqish sanasini belgilash")
+    async def schedule_start(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["movies"]:
+            await message.answer("Kontent yo'q.")
+            return
+        buttons = [[InlineKeyboardButton(text=f"Kod {c}", callback_data=f"schedpick_{c}")] for c in info["movies"]]
+        await message.answer("Qaysi kontent uchun chiqish sanasi belgilaymiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("schedpick_"))
+    async def schedule_pick(callback: CallbackQuery, state: FSMContext):
+        code = callback.data.split("_", 1)[1]
+        await state.update_data(sched_code=code)
+        await callback.message.answer("Chiqish sanasi va vaqtini kiriting (masalan: 25.12.2026 18:00):")
+        await state.set_state(ScheduleRelease.waiting_datetime)
+        await callback.answer()
+
+    @dp.message(ScheduleRelease.waiting_datetime)
+    async def schedule_save(message: Message, state: FSMContext):
+        try:
+            dt = datetime.strptime(message.text.strip(), "%d.%m.%Y %H:%M")
+        except ValueError:
+            await message.answer("❌ Format noto'g'ri. Masalan: 25.12.2026 18:00 ko'rinishida yuboring.")
+            return
+        fsm_data = await state.get_data()
+        code = fsm_data.get("sched_code")
+        if code in info["movies"]:
+            info["movies"][code]["release_at"] = dt.isoformat()
+            save_data()
+            await message.answer(f"✅ Kod {code} uchun chiqish sanasi: {dt.strftime('%d.%m.%Y %H:%M')}")
+        await state.clear()
+
+    # ---------- Reytinglar ----------
+    @dp.callback_query(F.data.startswith("rate_"))
+    async def rate_movie_cb(callback: CallbackQuery):
+        _, code, stars_str = callback.data.split("_")
+        stars = int(stars_str)
+        uid = str(callback.from_user.id)
+        rating = info["ratings"].setdefault(code, {"total": 0, "count": 0, "by_user": {}})
+        prev = rating["by_user"].get(uid)
+        if prev is not None:
+            rating["total"] -= prev
+            rating["count"] -= 1
+        rating["by_user"][uid] = stars
+        rating["total"] += stars
+        rating["count"] += 1
+        save_data()
+        await callback.answer(f"✅ Bahoyingiz qabul qilindi: {'⭐' * stars}")
+
+    @dp.message(F.text == "⭐ Reytinglar")
+    async def ratings_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        rated = [(c, r) for c, r in info["ratings"].items() if r["count"] > 0]
+        if not rated:
+            await message.answer("Hali baholangan kontent yo'q.")
+            return
+        rated.sort(key=lambda x: x[1]["total"] / x[1]["count"], reverse=True)
+        lines = []
+        for code, r in rated[:10]:
+            avg = r["total"] / r["count"]
+            lines.append(f"Kod {code}: {avg:.1f} ⭐ ({r['count']} ta baho)")
+        await message.answer("⭐ <b>Eng yuqori baholangan TOP-10:</b>\n\n" + "\n".join(lines))
+
+    # ---------- Faol foydalanuvchilar ----------
+    @dp.message(F.text == "🏆 Faol foydalanuvchilar")
+    async def active_users_top(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["user_activity"]:
+            await message.answer("Hali statistikaga yetarli ma'lumot yo'q.")
+            return
+        top = sorted(info["user_activity"].items(), key=lambda x: x[1], reverse=True)[:10]
+        lines = [f"{i+1}. ID {uid} — {count} ta so'rov" for i, (uid, count) in enumerate(top)]
+        await message.answer("🏆 <b>Eng faol foydalanuvchilar TOP-10:</b>\n\n" + "\n".join(lines))
+
+    # ---------- Moderatorlar ----------
+    @dp.message(F.text == "👮 Moderatorlar")
+    async def moderators_panel(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(
+            f"👮 <b>Moderatorlar</b>\n\nModeratorlar faqat kontent qo'sha oladi, boshqa sozlamalarga kira olmaydi.\n\nJami: {len(info['moderators'])} ta",
+            reply_markup=moderators_menu_kb(),
+        )
+
+    @dp.message(F.text == "➕ Moderator qo'shish")
+    async def moderator_add_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("Moderator qilmoqchi bo'lgan foydalanuvchi ID raqamini kiriting:")
+        await state.set_state(ModeratorAdd.waiting_id)
+
+    @dp.message(ModeratorAdd.waiting_id)
+    async def moderator_add_save(message: Message, state: FSMContext):
+        try:
+            target = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Faqat raqamli ID kiriting.")
+            return
+        if target not in info["moderators"]:
+            info["moderators"].append(target)
+            save_data()
+        await message.answer(f"✅ {target} moderator qilib tayinlandi.")
+        await state.clear()
+
+    @dp.message(F.text == "📋 Moderatorlar ro'yxati")
+    async def moderator_list(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["moderators"]:
+            await message.answer("Moderatorlar yo'q.")
+        else:
+            await message.answer("👮 Moderatorlar:\n\n" + "\n".join(f"• <code>{m}</code>" for m in info["moderators"]))
+
+    @dp.message(F.text == "➖ Moderatorni o'chirish")
+    async def moderator_del_start(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        if not info["moderators"]:
+            await message.answer("Moderatorlar yo'q.")
+            return
+        buttons = [[InlineKeyboardButton(text=str(m), callback_data=f"moddel_{m}")] for m in info["moderators"]]
+        await message.answer("O'chirmoqchi bo'lgan moderatorni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("moddel_"))
+    async def moderator_del_cb(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            return
+        target = int(callback.data.split("_", 1)[1])
+        if target in info["moderators"]:
+            info["moderators"].remove(target)
+            save_data()
+        await callback.message.answer(f"➖ {target} moderatorlikdan olib tashlandi.")
+        await callback.answer()
+
+    # ---------- Avtomatik hisobot ----------
+    @dp.message(F.text == "📅 Avtomatik hisobot")
+    async def auto_report_toggle(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        info["auto_report_enabled"] = not info.get("auto_report_enabled", False)
+        save_data()
+        if info["auto_report_enabled"]:
+            await message.answer(
+                f"✅ Avtomatik kunlik hisobot yoqildi. Har kuni soat {info.get('auto_report_hour', 9)}:00 dan keyin yuboriladi."
+            )
+        else:
+            await message.answer("❌ Avtomatik hisobot o'chirildi.")
 
     # ---------- Kategoriyalar ----------
     @dp.message(F.text == "🏷 Kategoriyalar")
@@ -5193,29 +5446,49 @@ def setup_kino_ultra_bot(dp: Dispatcher, token: str):
     async def get_movie(message: Message):
         if not await check_active(message, info, admin_id):
             return
-        if is_blocked(message.from_user.id):
+        uid = message.from_user.id
+        if is_blocked(uid):
             await message.answer("🚫 Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
             return
-        if info.get("maintenance_mode") and not is_admin(info, message.from_user.id):
+        if info.get("maintenance_mode") and not is_admin(info, uid):
             await message.answer("🛠 Bot hozircha texnik tanaffusda. Birozdan so'ng qayta urinib ko'ring.")
             return
         if not await require_subscription(message, info, admin_id):
             return
         code = message.text.strip()
-        info["stats"]["requests"] += 1
-        info["request_counts"][code] = info["request_counts"].get(code, 0) + 1
-        save_data()
         entry = info["movies"].get(code)
         if not entry:
             await message.answer("❌ Bunday kodli film topilmadi.")
             return
+
+        if code in info["vip_codes"] and not is_premium_user(uid):
+            await message.answer(
+                "🔒 Bu kontent faqat <b>VIP (Premium)</b> foydalanuvchilar uchun.\n\n"
+                "Premium sotib olish uchun \"💎 Premium\" tugmasini bosing."
+            )
+            return
+
+        release_at = entry.get("release_at")
+        if release_at and datetime.fromisoformat(release_at) > datetime.now() and not is_admin(info, uid):
+            dt = datetime.fromisoformat(release_at)
+            await message.answer(f"🗓 Bu kontent hali chiqmagan. Chiqish sanasi: {dt.strftime('%d.%m.%Y %H:%M')}")
+            return
+
+        info["stats"]["requests"] += 1
+        info["request_counts"][code] = info["request_counts"].get(code, 0) + 1
+        info["user_activity"][str(uid)] = info["user_activity"].get(str(uid), 0) + 1
+        save_data()
+
         if entry.get("type") == "series":
-            await send_series_episode(message.answer_video, entry, code, 1)
+            await send_series_episode(message.answer_video, entry, code, 1, uid=uid)
         else:
             caption = f"🎬 Kod: {code}"
             if entry.get("desc"):
                 caption += f"\n\n{entry['desc']}"
-            await message.answer_video(entry["file_id"], caption=caption)
+            rate_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=str(n), callback_data=f"rate_{code}_{n}") for n in range(1, 6)
+            ]])
+            await message.answer_video(entry["file_id"], caption=caption, reply_markup=rate_kb)
         active_ads = [a for a in info["ads"].values() if a.get("active")]
         if active_ads:
             import random
@@ -5311,10 +5584,42 @@ async def trial_warning_loop():
                         logging.error(f"Ogohlantirish yuborishda xato ({token}): {e}")
                     info["last_warned_date"] = today
                     save_data()
+
+                if info.get("type") == "kino_ultra" and info.get("auto_report_enabled"):
+                    now = datetime.now()
+                    if now.hour >= info.get("auto_report_hour", 9) and info.get("last_report_date") != today:
+                        try:
+                            await main_bot.send_message(info["admin_id"], build_kino_ultra_report(info))
+                        except Exception as e:
+                            logging.error(f"Avtomatik hisobot yuborishda xato ({token}): {e}")
+                        info["last_report_date"] = today
+                        save_data()
         except Exception as e:
             logging.error(f"trial_warning_loop xatosi: {e}")
 
         await asyncio.sleep(6 * 60 * 60)  # 6 soat
+
+
+def build_kino_ultra_report(info: dict) -> str:
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    daily_usage = info.get("daily_usage", {})
+    today_count = len(daily_usage.get("users", [])) if daily_usage.get("date") == today else 0
+    active_vip = 0
+    for u in info.get("premium_users", {}).values():
+        try:
+            if datetime.fromisoformat(u["until"]) > now:
+                active_vip += 1
+        except Exception:
+            pass
+    return (
+        f"📅 <b>Kunlik hisobot — {info['name']}</b>\n\n"
+        f"👥 Jami foydalanuvchilar: {len(info.get('users', []))}\n"
+        f"📊 Bugungi faol foydalanuvchilar: {today_count}\n"
+        f"🔍 Jami so'rovlar: {info.get('stats', {}).get('requests', 0)}\n"
+        f"🎞 Kontent soni: {len(info.get('movies', {}))}\n"
+        f"💎 Faol VIP: {active_vip}"
+    )
 
 
 MINIAPP_HTML = """<!DOCTYPE html>
