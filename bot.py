@@ -5045,10 +5045,10 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
     def content_menu_kb():
         return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="🎬 Film qo'shish"), KeyboardButton(text="📺 Serial qo'shish")],
-            [KeyboardButton(text="➕ Seriallarga qism qo'shish"), KeyboardButton(text="📋 Filmlar ro'yxati")],
-            [KeyboardButton(text="🔍 Kod bo'yicha qidirish"), KeyboardButton(text="✏️ Tavsifni tahrirlash")],
-            [KeyboardButton(text="🗑 Film o'chirish")],
+            [KeyboardButton(text="🎬 Film qo'shish"), KeyboardButton(text="🔒 VIP kino qo'shish")],
+            [KeyboardButton(text="📺 Serial qo'shish"), KeyboardButton(text="➕ Seriallarga qism qo'shish")],
+            [KeyboardButton(text="📋 Filmlar ro'yxati"), KeyboardButton(text="🔍 Kod bo'yicha qidirish")],
+            [KeyboardButton(text="✏️ Tavsifni tahrirlash"), KeyboardButton(text="🗑 Film o'chirish")],
             [KeyboardButton(text="🔒 VIP qilib belgilash"), KeyboardButton(text="🗓 Chiqish sanasini belgilash")],
             [KeyboardButton(text="◀️ Orqaga")],
         ], resize_keyboard=True)
@@ -5170,7 +5170,8 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             return
         if not await require_subscription(message, info, admin_id):
             return
-        await message.answer(info.get("welcome_text", "🎬 Film kodini yuboring, men uni topib beraman."))
+        customer_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 VIP kinolar")]], resize_keyboard=True)
+        await message.answer(info.get("welcome_text", "🎬 Film kodini yuboring, men uni topib beraman."), reply_markup=customer_kb)
         if info.get("featured"):
             lines = []
             for code in info["featured"]:
@@ -5181,6 +5182,27 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             if lines:
                 await message.answer("⭐ <b>Tavsiya etilgan kontent:</b>\n\n" + "\n".join(lines))
 
+    @dp.message(F.text == "💎 VIP kinolar")
+    async def vip_catalog(message: Message):
+        uid = message.from_user.id
+        if not info["vip_codes"]:
+            await message.answer("Hozircha VIP kontent mavjud emas.")
+            return
+        lines = []
+        for code in info["vip_codes"]:
+            m = info["movies"].get(code)
+            if not m:
+                continue
+            title = m.get("title") or m.get("desc", "-")[:30]
+            lines.append(f"• Kod {code} — {title}")
+        if not lines:
+            await message.answer("Hozircha VIP kontent mavjud emas.")
+            return
+        text = "🔒 <b>VIP kinolar:</b>\n\n" + "\n".join(lines)
+        if not is_premium_user(uid):
+            text += "\n\n💎 Bu kontentni ko'rish uchun Premium sotib oling."
+        await message.answer(text)
+
     # ---------- Statistika ----------
     @dp.message(Command("stats"))
     @dp.message(F.text == "📊 Statistika")
@@ -5189,11 +5211,13 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             return
         today = datetime.now().strftime("%Y-%m-%d")
         today_count = info.get("daily_usage", {}).get("date") == today and len(info.get("daily_usage", {}).get("users", []))
+        vip_count = len(info["vip_codes"])
+        free_count = len(info["movies"]) - vip_count
         await message.answer(
             f"📊 <b>Statistika</b>\n\n"
             f"👥 Foydalanuvchilar: {len(info['users'])}\n"
             f"🔍 Jami so'rovlar: {info['stats']['requests']}\n"
-            f"🎞 Saqlangan kontent: {len(info['movies'])}\n"
+            f"🎞 Saqlangan kontent: {len(info['movies'])} (🆓 {free_count} / 🔒 VIP {vip_count})\n"
             f"🏷 Kategoriyalar: {len(info['categories'])}\n"
             f"⭐ Tavsiyalar: {len(info['featured'])}\n"
             f"🚫 Bloklanganlar: {len(info['blocked_users'])}\n"
@@ -5225,7 +5249,19 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     async def addmovie_cmd(message: Message, state: FSMContext):
         if not is_moderator(message.from_user.id):
             return
+        await state.update_data(is_vip=False)
         await message.answer("Kino kodini yuboring (faqat raqam, masalan: 40):")
+        await state.set_state(AddMovie.waiting_code)
+
+    @dp.message(F.text == "🔒 VIP kino qo'shish")
+    async def addvipmovie_cmd(message: Message, state: FSMContext):
+        if not is_moderator(message.from_user.id):
+            return
+        await state.update_data(is_vip=True)
+        await message.answer(
+            "🔒 <b>VIP kino qo'shish</b>\n\nBu kino faqat Premium (VIP) foydalanuvchilarga ko'rinadi.\n\n"
+            "Kino kodini yuboring (faqat raqam, masalan: 40):"
+        )
         await state.set_state(AddMovie.waiting_code)
 
     @dp.message(F.text == "📺 Serial qo'shish")
@@ -5407,11 +5443,16 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         state_data = await state.get_data()
         code = state_data.get("code")
         desc = state_data.get("desc", "")
+        is_vip = state_data.get("is_vip", False)
         info["movies"][code] = {"file_id": message.video.file_id, "desc": desc}
+        if is_vip and code not in info["vip_codes"]:
+            info["vip_codes"].append(code)
         save_data()
         if info.get("new_content_notify"):
-            await notify_new_content(message.bot, f"🎬 Yangi film qo'shildi: Kod {code}")
-        await message.answer(f"✅ Kod <b>{code}</b> bilan film saqlandi.")
+            label = "🔒 Yangi VIP film" if is_vip else "🎬 Yangi film"
+            await notify_new_content(message.bot, f"{label} qo'shildi: Kod {code}")
+        vip_note = "\n🔒 Bu film VIP-maxsus (faqat Premium foydalanuvchilar ko'radi)." if is_vip else ""
+        await message.answer(f"✅ Kod <b>{code}</b> bilan film saqlandi.{vip_note}")
         await state.clear()
 
     @dp.message(AddMovie.waiting_video)
@@ -5429,10 +5470,11 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         for code, m in info["movies"].items():
             cat = info["categories"].get(m.get("category", ""), "")
             cat_note = f" [{cat}]" if cat else ""
+            vip_mark = "🔒 VIP" if code in info["vip_codes"] else "🆓"
             if m.get("type") == "series":
-                lines.append(f"• Kod {code} 📺 [Serial] {m.get('title', '-')} ({len(m.get('episodes', {}))} qism){cat_note}")
+                lines.append(f"• Kod {code} {vip_mark} 📺 [Serial] {m.get('title', '-')} ({len(m.get('episodes', {}))} qism){cat_note}")
             else:
-                lines.append(f"• Kod {code} 🎬 {m.get('desc', '-')[:40]}{cat_note}")
+                lines.append(f"• Kod {code} {vip_mark} 🎬 {m.get('desc', '-')[:40]}{cat_note}")
         await message.answer("📋 <b>Filmlar:</b>\n\n" + "\n".join(lines))
 
     @dp.message(F.text == "🔍 Kod bo'yicha qidirish")
@@ -6178,9 +6220,10 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             return
 
         if code in info["vip_codes"] and not is_premium_user(uid):
+            vip_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Premium sotib olish", callback_data="buy_premium")]])
             await message.answer(
-                "🔒 Bu kontent faqat <b>VIP (Premium)</b> foydalanuvchilar uchun.\n\n"
-                "Premium sotib olish uchun \"💎 Premium\" tugmasini bosing."
+                "🔒 Bu kontent faqat <b>VIP (Premium)</b> foydalanuvchilar uchun.",
+                reply_markup=vip_kb,
             )
             return
 
