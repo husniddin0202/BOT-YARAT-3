@@ -42,6 +42,7 @@ main_dp = Dispatcher(storage=MemoryStorage())
 
 BOT_TYPES = {
     "kino": "🎬 Kino bot",
+    "kino_pro": "🎬💎 Pro Kino Bot",
     "shop": "🛒 Savdo bot",
     "ai": "🤖 AI-yordamchi bot",
     "money": "💱 Pul (valyuta) bot",
@@ -52,6 +53,7 @@ BOT_TYPES = {
 
 DEFAULT_PRICES = {
     "kino": 120_000,
+    "kino_pro": 120_000,
     "ai": 120_000,
     "shop": 120_000,
     "money": 120_000,
@@ -199,7 +201,9 @@ OTHER_BOT_TARIFF_NAME = "Standart"
 
 
 def get_bot_tariff(info: dict) -> dict:
-    if info.get("type") == "kino":
+    if info.get("custom_price"):
+        return {"name": "Maxsus", "price": info["custom_price"], "daily_limit": None}
+    if info.get("type") in ("kino", "kino_pro"):
         return get_tariff(info.get("tariff", "2"))
     return {"name": OTHER_BOT_TARIFF_NAME, "price": data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE), "daily_limit": None}
 
@@ -230,11 +234,18 @@ BOT_DESCRIPTIONS = {
         "biriktirasiz. Foydalanuvchilar shu kod orqali kinoni tez va oson yuklab "
         "olishlari mumkin.</i>\n\n"
         "🏷 Kategoriyalar, ⭐ tavsiya etilgan kontent, 📈 TOP reyting, baholash, 🎁 referal, "
-        "🔒 VIP-maxsus kontent, 🗓 rejalashtirilgan chiqarish, 👮 moderatorlar, 📣 reklama, "
+        "🗓 rejalashtirilgan chiqarish, 👮 moderatorlar, 📣 reklama, "
         "👥 foydalanuvchilarni bloklash/qidirish, 📊 chuqur statistika va yana ko'p narsa.\n\n"
-        "🔒 Tizim majburiy obuna (Telegram/Instagram/TikTok/YouTube/boshqa havola), "
-        "to'lov tizimlari va Premium obuna orqali yopiq kontent berish imkoniyatlarini ham "
-        "taqdim etadi.\n\n"
+        "🔒 Tizim majburiy obuna (Telegram/Instagram/TikTok/YouTube/boshqa havola) "
+        "va to'lov tizimlari imkoniyatlarini ham taqdim etadi.\n\n"
+        "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
+    ),
+    "kino_pro": (
+        "<i>Kino botning barcha imkoniyatlari + VIP tizimi bilan.</i>\n\n"
+        "🔒 VIP-maxsus kino qo'shish, faqat Premium foydalanuvchilarga ko'rinadigan yopiq "
+        "kontent, 💎 VIP kinolar katalogi — bularning barchasi faqat Pro Kino Botda mavjud.\n\n"
+        "🏷 Kategoriyalar, ⭐ tavsiyalar, 📈 TOP reyting, baholash, 🎁 referal, 🗓 rejalashtirilgan "
+        "chiqarish, 👮 moderatorlar, 📣 reklama va yana ko'p narsa ham bor.\n\n"
         "⚙️ Barcha boshqaruv admin panel orqali amalga oshiriladi."
     ),
     "shop": (
@@ -351,6 +362,10 @@ class NewPlatformFlow(StatesGroup):
 
 class EditPrice(StatesGroup):
     waiting_amount = State()
+
+
+class BotCustomPrice(StatesGroup):
+    waiting_price = State()
 
 
 class NewTariffAdd(StatesGroup):
@@ -1005,6 +1020,7 @@ def setup_platform_bot(dp: Dispatcher):
             keyboard.append([KeyboardButton(text="📊 Statistika"), KeyboardButton(text="➕ Hisob qo'shish")])
             keyboard.append([KeyboardButton(text="💵 Tariflar"), KeyboardButton(text="💳 To'lov tizimlar")])
             keyboard.append([KeyboardButton(text="⭐ Stars kursi"), KeyboardButton(text="👥 Hamkor-adminlar")])
+            keyboard.append([KeyboardButton(text="🤖 Botlar narxi")])
         elif str(uid) in data["sub_admins"]:
             keyboard.append([KeyboardButton(text="➕ Hisob qo'shish"), KeyboardButton(text="💼 Mening daromadim")])
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -1590,21 +1606,23 @@ def setup_platform_bot(dp: Dispatcher):
             await state.clear()
             return
 
-        if bot_type != "kino":
+        if bot_type not in ("kino", "kino_pro"):
             # Kino'dan boshqa botlar — tarifsiz, yagona narx bilan yaratiladi
             info = await finalize_bot_creation(token, me.first_name, bot_type, message.from_user.id, None)
             tariff = get_bot_tariff(info)
             price_note = f"💰 Oylik narx: {tariff['price']:,} so'm/oy\n"
+            go_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤖 Botga o'tish", url=f"https://t.me/{me.username}")]]) if me.username else None
             await message.answer(
                 f"✅ {BOT_TYPES[bot_type]} ishga tushdi: <b>{me.first_name}</b>\n\n"
                 f"{price_note}"
                 f"🎁 {TRIAL_DAYS} kunlik bepul sinov boshlandi!\n"
-                "Majburiy obuna qo'shish uchun o'sha botga /channels yozing."
+                "Majburiy obuna qo'shish uchun o'sha botga /channels yozing.",
+                reply_markup=go_kb,
             )
             await state.clear()
             return
 
-        await state.update_data(token=token, bot_name=me.first_name)
+        await state.update_data(token=token, bot_name=me.first_name, bot_username=me.username)
         await state.set_state(NewBotFlow.waiting_tariff)
         await message.answer(
             f"✅ Bot topildi: <b>{me.first_name}</b>\n\n{BOT_TYPES[bot_type]} uchun tarifni tanlang:",
@@ -1618,6 +1636,7 @@ def setup_platform_bot(dp: Dispatcher):
         token = state_data.get("token")
         bot_name = state_data.get("bot_name")
         bot_type = state_data.get("bot_type")
+        bot_username = state_data.get("bot_username")
 
         if not token or not bot_type:
             await callback.answer("Xatolik: qaytadan \"🤖 Bot yaratish\" bosing.", show_alert=True)
@@ -1626,11 +1645,13 @@ def setup_platform_bot(dp: Dispatcher):
         info = await finalize_bot_creation(token, bot_name, bot_type, callback.from_user.id, tariff_id)
 
         tariff = get_tariff(tariff_id)
+        go_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤖 Botga o'tish", url=f"https://t.me/{bot_username}")]]) if bot_username else None
         await callback.message.edit_text(
             f"✅ {BOT_TYPES[bot_type]} ishga tushdi: <b>{bot_name}</b>\n\n"
             f"💠 Tarif: {tariff['name']} — {tariff['price']:,} so'm/oy ({tariff_limit_text(tariff)})\n"
             f"🎁 {TRIAL_DAYS} kunlik bepul sinov boshlandi!\n"
-            "Majburiy obuna qo'shish uchun o'sha botga /channels yozing."
+            "Majburiy obuna qo'shish uchun o'sha botga /channels yozing.",
+            reply_markup=go_kb,
         )
         await state.clear()
         await callback.answer()
@@ -1919,7 +1940,7 @@ def setup_platform_bot(dp: Dispatcher):
             )
             buttons = []
             if info.get("admin_id") != ADMIN_ID:
-                if info["type"] == "kino":
+                if info["type"] in ("kino", "kino_pro"):
                     buttons.append([InlineKeyboardButton(text="🔄 Tarifni o'zgartirish", callback_data=f"changetariff_{info['id']}")])
                 buttons.append([InlineKeyboardButton(text="💰 Hozir to'lov qilish", callback_data=f"paynow_{info['id']}")])
             kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
@@ -1931,6 +1952,88 @@ def setup_platform_bot(dp: Dispatcher):
                 return token, info
         return None, None
 
+    # ---------- Botlar narxi (admin har bir botni alohida tahrirlashi) ----------
+    @dp.message(F.text == "🤖 Botlar narxi")
+    async def bot_prices_panel(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        if not data["bots"]:
+            await message.answer("Hozircha botlar yo'q.")
+            return
+        buttons = []
+        for token, b in data["bots"].items():
+            tariff = get_bot_tariff(b)
+            mark = "⚙️" if b.get("custom_price") else ""
+            buttons.append([InlineKeyboardButton(
+                text=f"{mark}{b['name']} ({BOT_TYPES.get(b['type'], b['type'])}) — {tariff['price']:,} so'm",
+                callback_data=f"botpricepick_{b['id']}",
+            )])
+        await message.answer("🤖 <b>Botlar narxi</b>\n\n⚙️ — maxsus narx qo'yilgan botlar.\n\nTahrirlamoqchi bo'lgan botni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    @dp.callback_query(F.data.startswith("botpricepick_"))
+    async def bot_price_pick_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        bot_id = int(callback.data.split("_", 1)[1])
+        token, target = find_bot_by_id(bot_id)
+        if not target:
+            await callback.answer("❌ Bot topilmadi.", show_alert=True)
+            return
+        tariff = get_bot_tariff(target)
+        buttons = [[InlineKeyboardButton(text="✏️ Yangi narx belgilash", callback_data=f"botpriceset_{bot_id}")]]
+        if target.get("custom_price"):
+            buttons.append([InlineKeyboardButton(text="↩️ Standart narxga qaytarish", callback_data=f"botpricereset_{bot_id}")])
+        await callback.message.answer(
+            f"🤖 <b>{target['name']}</b> ({BOT_TYPES.get(target['type'], target['type'])})\n"
+            f"👤 Egasi ID: {target['admin_id']}\n"
+            f"💰 Joriy narx: {tariff['price']:,} so'm/oy{' (maxsus)' if target.get('custom_price') else ''}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        )
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("botpriceset_"))
+    async def bot_price_set_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        bot_id = int(callback.data.split("_", 1)[1])
+        await state.update_data(price_bot_id=bot_id)
+        await callback.message.answer("Yangi oylik narxni kiriting (so'm, faqat raqam):")
+        await state.set_state(BotCustomPrice.waiting_price)
+        await callback.answer()
+
+    @dp.message(BotCustomPrice.waiting_price)
+    async def bot_price_set_save(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        try:
+            price = int(message.text.strip().replace(" ", ""))
+            if price <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        fsm_data = await state.get_data()
+        bot_id = fsm_data.get("price_bot_id")
+        token, target = find_bot_by_id(bot_id)
+        if target:
+            target["custom_price"] = price
+            save_data()
+            await message.answer(f"✅ <b>{target['name']}</b> uchun narx endi: {price:,} so'm/oy (maxsus).")
+        await state.clear()
+
+    @dp.callback_query(F.data.startswith("botpricereset_"))
+    async def bot_price_reset_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        bot_id = int(callback.data.split("_", 1)[1])
+        token, target = find_bot_by_id(bot_id)
+        if target:
+            target.pop("custom_price", None)
+            save_data()
+            tariff = get_bot_tariff(target)
+            await callback.message.answer(f"↩️ <b>{target['name']}</b> standart narxga qaytarildi: {tariff['price']:,} so'm/oy.")
+        await callback.answer()
+
     @dp.callback_query(F.data.startswith("changetariff_"))
     async def changetariff_cb(callback: CallbackQuery):
         bot_id = int(callback.data.split("_", 1)[1])
@@ -1938,7 +2041,7 @@ def setup_platform_bot(dp: Dispatcher):
         if not target or callback.from_user.id not in target.get("admin_ids", [target["admin_id"]]):
             await callback.answer("Ruxsat yo'q.", show_alert=True)
             return
-        if target["type"] != "kino":
+        if target["type"] not in ("kino", "kino_pro"):
             await callback.answer("Bu bot turi uchun tarif tanlash mavjud emas — narx doim bir xil.", show_alert=True)
             return
         current_tariff = target.get("tariff", "2")
@@ -5027,6 +5130,9 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     def is_moderator(uid: int) -> bool:
         return is_admin(info, uid) or uid in info.get("moderators", [])
 
+    def is_pro() -> bool:
+        return info.get("type") == "kino_pro"
+
     def is_premium_user(uid: int) -> bool:
         return is_admin(info, uid) or is_premium_active(info, uid)
 
@@ -5044,14 +5150,17 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def content_menu_kb():
-        return ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text="🎬 Film qo'shish"), KeyboardButton(text="🔒 VIP kino qo'shish")],
-            [KeyboardButton(text="📺 Serial qo'shish"), KeyboardButton(text="➕ Seriallarga qism qo'shish")],
-            [KeyboardButton(text="📋 Filmlar ro'yxati"), KeyboardButton(text="🔍 Kod bo'yicha qidirish")],
-            [KeyboardButton(text="✏️ Tavsifni tahrirlash"), KeyboardButton(text="🗑 Film o'chirish")],
-            [KeyboardButton(text="🔒 VIP qilib belgilash"), KeyboardButton(text="🗓 Chiqish sanasini belgilash")],
-            [KeyboardButton(text="◀️ Orqaga")],
-        ], resize_keyboard=True)
+        keyboard = [
+            [KeyboardButton(text="🎬 Film qo'shish"), KeyboardButton(text="📺 Serial qo'shish")],
+            [KeyboardButton(text="➕ Seriallarga qism qo'shish"), KeyboardButton(text="📋 Filmlar ro'yxati")],
+            [KeyboardButton(text="🔍 Kod bo'yicha qidirish"), KeyboardButton(text="✏️ Tavsifni tahrirlash")],
+            [KeyboardButton(text="🗑 Film o'chirish")],
+        ]
+        if is_pro():
+            keyboard.append([KeyboardButton(text="🔒 VIP kino qo'shish"), KeyboardButton(text="🔒 VIP qilib belgilash")])
+        keyboard.append([KeyboardButton(text="🗓 Chiqish sanasini belgilash")])
+        keyboard.append([KeyboardButton(text="◀️ Orqaga")])
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     def categories_menu_kb():
         return ReplyKeyboardMarkup(keyboard=[
@@ -5170,7 +5279,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             return
         if not await require_subscription(message, info, admin_id):
             return
-        customer_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 VIP kinolar")]], resize_keyboard=True)
+        customer_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 VIP kinolar")]], resize_keyboard=True) if is_pro() else None
         await message.answer(info.get("welcome_text", "🎬 Film kodini yuboring, men uni topib beraman."), reply_markup=customer_kb)
         if info.get("featured"):
             lines = []
@@ -5184,6 +5293,8 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
     @dp.message(F.text == "💎 VIP kinolar")
     async def vip_catalog(message: Message):
+        if not is_pro():
+            return
         uid = message.from_user.id
         if not info["vip_codes"]:
             await message.answer("Hozircha VIP kontent mavjud emas.")
@@ -5255,7 +5366,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
     @dp.message(F.text == "🔒 VIP kino qo'shish")
     async def addvipmovie_cmd(message: Message, state: FSMContext):
-        if not is_moderator(message.from_user.id):
+        if not is_moderator(message.from_user.id) or not is_pro():
             return
         await state.update_data(is_vip=True)
         await message.answer(
@@ -5606,7 +5717,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     # ---------- VIP kontent ----------
     @dp.message(F.text == "🔒 VIP qilib belgilash")
     async def vip_mark_start(message: Message):
-        if not is_admin(info, message.from_user.id):
+        if not is_admin(info, message.from_user.id) or not is_pro():
             return
         if not info["movies"]:
             await message.answer("Kontent yo'q.")
@@ -6219,7 +6330,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await message.answer("❌ Bunday kodli film topilmadi.")
             return
 
-        if code in info["vip_codes"] and not is_premium_user(uid):
+        if is_pro() and code in info["vip_codes"] and not is_premium_user(uid):
             vip_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Premium sotib olish", callback_data="buy_premium")]])
             await message.answer(
                 "🔒 Bu kontent faqat <b>VIP (Premium)</b> foydalanuvchilar uchun.",
@@ -6258,6 +6369,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
 SETUP_FUNCTIONS = {
     "kino": setup_kino_bot,
+    "kino_pro": setup_kino_bot,
     "shop": setup_shop_bot,
     "ai": setup_ai_bot,
     "money": setup_money_bot,
